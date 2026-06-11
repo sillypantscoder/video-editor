@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<style>
+html {
+	height: 100%;
+	background: #111;
+	color: white;
+	font-family: sans-serif;
+}
+body {
+	height: 100%;
+	margin: 0;
+	display: flex;
+}
+#timeline {
+	width: 25%;
+	position: relative;
+	overflow-y: scroll;
+	& > .timeline-tick {
+		font-size: 0.75em;
+		/* positioning */
+		position: absolute;
+		top: calc(50vh + var(--y) - 0.5em);
+		left: 0.125em;
+		width: calc(100% - 0.125em);
+		/* display */
+		color: #888;
+		&.current-pos {
+			color: white;
+		}
+		/* line */
+		display: flex;
+		align-items: center;
+		&::after {
+			content: "";
+			display: block;
+			width: 100%;
+			border-bottom: 1px solid #333;
+			margin-left: 0.5em;
+		}
+		&.current-pos::after {
+			border-bottom-color: white;
+		}
+	}
+}
+#main-panel {
+	width: 75%;
+	display: flex;
+	flex-direction: column;
+}
+#preview-container {
+	height: 50%;
+	display: flex;
+	position: relative;
+	justify-content: center;
+	align-items: center;
+	background: #222;
+	& > canvas {
+		background: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 2"><rect x="0" y="0" width="2" height="2" fill="rgb(0,0,0)" /><rect x="1" y="0" width="1" height="1" fill="rgb(32,32,32)" /><rect x="0" y="1" width="1" height="1" fill="rgb(32,32,32)" /></svg>');
+		background-size: 10px;
+		box-shadow: 0px 8px 20px 2px black;
+	}
+}
+#tab-container {
+	height: 50%;
+}
+		</style>
+	</head>
+	<body>
+		<div id="timeline"></div>
+		<div id="main-panel">
+			<div id="preview-container"></div>
+			<div id="tab-container"></div>
+		</div>
+		<script src="index.js"></script>
+	</body>
+</html>

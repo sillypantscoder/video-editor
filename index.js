@@ -9,6 +9,18 @@ class Utils {
 		return e
 	}
 	/**
+	 * @param {Map<string, ObjectProperty>} map
+	 * @returns {Map<string, ObjectProperty>}
+	 */
+	static copyPropertyMap(map) {
+		/** @type {Map<string, ObjectProperty>} */
+		var newMap = new Map();
+		for (var [key, value] of map) {
+			newMap.set(key, value.copy())
+		}
+		return newMap;
+	}
+	/**
 	 * Uses canvas.measureText to compute and return the width of the given text of given font in pixels.
 	 *
 	 * @param {String} text The text to be rendered.
@@ -87,6 +99,22 @@ class CacheMap {
 
 class ObjectProperty {
 	constructor() {}
+	/** @returns {ObjectProperty} */
+	copy() {
+		throw new Error("Cannot copy a base property")
+	}
+	/** @param {ObjectProperty} property */
+	setFrom(property) {
+		throw new Error("Cannot set a base property's value")
+	}
+	/**
+	 * @param {number} time
+	 * @param {ObjectProperty} endpoint
+	 * @returns {ObjectProperty}
+	 */
+	interpolate(time, endpoint) {
+		throw new Error("Cannot interpolate a base property's value")
+	}
 }
 class NumericProperty extends ObjectProperty {
 	/** @param {number} value */
@@ -94,6 +122,27 @@ class NumericProperty extends ObjectProperty {
 		super()
 		/** @type {number} */
 		this.value = value
+	}
+	/** @returns {NumericProperty} */
+	copy() {
+		return new NumericProperty(this.value)
+	}
+	/** @param {ObjectProperty} property */
+	setFrom(property) {
+		if (property instanceof NumericProperty) {
+			this.value = property.value
+		} else throw new Error("Cannot set NumericProperty to a differently-typed property")
+	}
+	/**
+	 * @param {number} time
+	 * @param {ObjectProperty} endpoint
+	 * @returns {NumericProperty}
+	 */
+	interpolate(time, endpoint) {
+		if (endpoint instanceof NumericProperty) {
+			var value = ((1-time) * this.value) + (time * endpoint.value)
+			return new NumericProperty(value)
+		} else throw new Error("Cannot interpolate NumericProperty with a differently-typed property")
 	}
 }
 class StringProperty extends ObjectProperty {
@@ -103,12 +152,94 @@ class StringProperty extends ObjectProperty {
 		/** @type {string} */
 		this.value = value
 	}
+	/** @returns {StringProperty} */
+	copy() {
+		return new StringProperty(this.value)
+	}
+	/** @param {ObjectProperty} property */
+	setFrom(property) {
+		if (property instanceof StringProperty) {
+			this.value = property.value
+		} else throw new Error("Cannot set NumericProperty to a differently-typed property")
+	}
+	/**
+	 * @param {number} time
+	 * @param {ObjectProperty} endpoint
+	 * @returns {StringProperty}
+	 */
+	interpolate(time, endpoint) {
+		if (endpoint instanceof StringProperty) {
+			var value = this.value
+			return new StringProperty(value)
+		} else throw new Error("Cannot interpolate StringProperty with a differently-typed property")
+	}
 }
 
 class VObject {
-	constructor() {
+	/**
+	 * @param {number} startTime
+	 * @param {Map<string, ObjectProperty>} initialProperties
+	 * @param {number} length
+	 */
+	constructor(startTime, initialProperties, length) {
 		/** @type {Map<string, ObjectProperty>} */
-		this.properties = new Map()
+		this.properties = initialProperties
+		/** @type {{ startTime: number, initialProperties: Map<string, ObjectProperty>, keyframes: { time: number, properties: Map<string, ObjectProperty> }[] }} */
+		this.config = {
+			startTime,
+			initialProperties: Utils.copyPropertyMap(initialProperties),
+			keyframes: [
+				{ time: startTime + length, properties: Utils.copyPropertyMap(initialProperties) }
+			]
+		}
+	}
+	/**
+	 * @param {number} time
+	 * @returns {boolean}
+	 */
+	isVisibleAtTime(time) {
+		if (time < this.config.startTime) return false;
+		var maxTime = this.config.keyframes[this.config.keyframes.length - 1].time
+		return time <= maxTime;
+	}
+	/**
+	 * @param {number} time
+	 * @returns {Map<string, ObjectProperty> | null}
+	 */
+	getPropertiesAtTime(time) {
+		if (time < this.config.startTime) return null;
+		if (time == this.config.startTime) return Utils.copyPropertyMap(this.config.initialProperties);
+		for (var i = 0; i < this.config.keyframes.length; i++) {
+			if (time < this.config.keyframes[i].time) {
+				// Get interpolation parameters
+				var previousTime = (this.config.keyframes[i-1] ?? { time: this.config.startTime }).time
+				var timeDifference = this.config.keyframes[i].time - previousTime
+				var fraction = (time - previousTime) / timeDifference
+				// Interpolate!
+				var previousData = [this.config.initialProperties, ...this.config.keyframes.map((v) => v.properties)][i]
+				var nextData = this.config.keyframes[i].properties
+				/** @type {Map<string, ObjectProperty>} */
+				var interpolatedData = new Map();
+				for (var key of previousData.keys()) {
+					var previousValue = previousData.get(key);
+					if (previousValue == undefined) throw new Error("Missing property in keyframes")
+					var nextValue = nextData.get(key);
+					if (nextValue == undefined) throw new Error("Missing property in keyframes")
+					interpolatedData.set(key, previousValue.interpolate(fraction, nextValue));
+				}
+				return interpolatedData;
+			}
+			if (time == this.config.keyframes[i].time) return Utils.copyPropertyMap(this.config.keyframes[i].properties);
+		}
+		return null;
+	}
+	/** @param {number} time */
+	setCurrentPropertiesToCalculatedPropertiesAtTime(time) {
+		var properties = this.getPropertiesAtTime(time)
+		if (properties == null) return;
+		for (var key of properties.keys()) {
+			this.properties.get(key)?.setFrom(properties.get(key) ?? new ObjectProperty())
+		}
 	}
 	/**
 	 * @param {number} currentTime
@@ -121,19 +252,31 @@ class VObject {
 	}
 }
 class VText extends VObject {
-	constructor() {
-		super()
-		// pos/size
-		this.centerX = new NumericProperty(0.5)
-		this.properties.set("centerX", this.centerX)
-		this.centerY = new NumericProperty(0.5)
-		this.properties.set("centerY", this.centerY)
-		this.width = new NumericProperty(0.3)
-		this.properties.set("width", this.width)
-		// text
-		this.text = new StringProperty("Text goes here asdf asdf asdf asdf asdf")
-		this.properties.set("text", this.text)
-		// render
+	/**
+	 * @param {number} startTime
+	 */
+	constructor(startTime) {
+		// - pos/size
+		var centerX = new NumericProperty(0.5)
+		var centerY = new NumericProperty(0.5)
+		var width = new NumericProperty(0.15)
+		// - text
+		var text = new StringProperty("Text goes here asdf asdf asdf asdf asdf")
+		// create!
+		/** @type {[string, ObjectProperty][]} */
+		var properties = [
+			["centerX", centerX],
+			["centerY", centerY],
+			["width", width],
+			["text", text]
+		]
+		super(startTime, new Map(properties), 5)
+		// properties
+		this.centerX = centerX
+		this.centerY = centerY
+		this.width = width
+		this.text = text
+		// rendering cache
 		/** @type {CacheMap<[number, string], OffscreenCanvas>} */
 		this.renders = new CacheMap(VText.createRender, 10)
 	}
@@ -178,10 +321,11 @@ class VText extends VObject {
 	 * @param {CanvasRenderingContext2D} canvas
 	 */
 	render(currentTime, width, height, canvas) {
-		var render = this.renders.get(this.width.value * width, this.text.value) // TEST
+		this.setCurrentPropertiesToCalculatedPropertiesAtTime(currentTime)
+		var render = this.renders.get(this.width.value * width, this.text.value)
 		var posX = (this.centerX.value * width) - (render.width / 2)
 		var posY = (this.centerY.value * height) - (render.height / 2)
-		canvas.drawImage(render, Math.round(posX + currentTime), Math.round(posY + currentTime)) // TEST
+		canvas.drawImage(render, Math.round(posX), Math.round(posY))
 	}
 }
 
@@ -199,7 +343,8 @@ class VideoEditorApp {
 		this.currentTime = 0;
 		/** @type {VObject[]} */
 		this.objects = [];
-		this.objects.push(new VText()); // TEST
+		this.objects.push(new VText(1)); // TEST
+		this.objects[0].config.keyframes[0].properties.get("centerX")?.setFrom(new NumericProperty(0.9)) // TEST
 		// initialize dom
 		this.updateTimelineTicks();
 		this.element_preview.height = Math.round(Math.min(
@@ -232,7 +377,9 @@ class VideoEditorApp {
 		this.preview_ctx.clearRect(0, 0, this.element_preview.width, this.element_preview.height)
 		// draw objects
 		for (var o of this.objects) {
-			o.render(this.currentTime, this.element_preview.width, this.element_preview.height, this.preview_ctx)
+			if (o.isVisibleAtTime(this.currentTime)) {
+				o.render(this.currentTime, this.element_preview.width, this.element_preview.height, this.preview_ctx)
+			}
 		}
 	}
 	onFrame() {

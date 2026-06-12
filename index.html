@@ -31,6 +31,7 @@ body {
 			color: white;
 			z-index: 1;
 		}
+		pointer-events: none;
 		/* line */
 		display: flex;
 		align-items: center;
@@ -61,6 +62,12 @@ body {
 		& > img {
 			width: 100%;
 			margin: 0.25em 0;
+			pointer-events: none;
+		}
+		/* selected styles */
+		&.selected {
+			outline: 2px solid blue;
+			box-shadow: 0px 5px 10px 2.5px blue;
 		}
 	}
 }
@@ -88,7 +95,11 @@ body {
 		</style>
 	</head>
 	<body>
-		<div id="timeline" onscroll="app.onScroll()" onwheel="if (event.ctrlKey) { event.preventDefault(); app.zoomTimeline(Math.pow(2, event.deltaY / -300)) }" onclick="app.scrollTimelineByPixels(event.clientY - (window.innerHeight / 2))"></div>
+		<div id="timeline"
+			onscroll="app.onScroll()"
+			onwheel="if (event.ctrlKey) { event.preventDefault(); app.zoomTimeline(Math.pow(2, event.deltaY / -300)) }"
+			onclick="if (event.target.classList.contains('timeline-block')) { app.selectObjectFromTimelineBlock(event.target) } else if (app.selectedObject != null) { app.setSelectedObject(null) } else { app.scrollTimelineByPixels(event.clientY - (window.innerHeight / 2)) }"
+		></div>
 		<div id="main-panel">
 			<div id="preview-container"></div>
 			<div id="tab-container"></div>

@@ -21,6 +21,13 @@ class Utils {
 		return newMap;
 	}
 	/**
+	 * @param {{ x: number, y: number }} point
+	 * @param {{ x: number, y: number, width: number, height: number }} rect
+	 */
+	static pointInsideRect(point, rect) {
+		return point.x >= rect.x && point.x <= rect.x + rect.width && point.y >= rect.y && point.y <= rect.y + rect.height
+	}
+	/**
 	 * Uses canvas.measureText to compute and return the width of the given text of given font in pixels.
 	 *
 	 * @param {String} text The text to be rendered.
@@ -292,19 +299,27 @@ class VObject {
 		}
 	}
 	/**
-	 * @param {number} width
-	 * @param {number} height
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
 	 * @returns {OffscreenCanvas}
 	 */
-	getVisualRepresentation(width, height) {
+	getVisualRepresentation(screenWidth, screenHeight) {
 		throw new Error("Cannot render a base object")
 	}
 	/**
-	 * @param {number} width
-	 * @param {number} height
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
+	 * @returns {{ x: number, y: number, width: number, height: number }}
+	 */
+	getPixelBoundingBox(screenWidth, screenHeight) {
+		throw new Error("Cannot find the bounding box of a base object")
+	}
+	/**
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
 	 * @param {CanvasRenderingContext2D} canvas
 	 */
-	render(width, height, canvas) {
+	render(screenWidth, screenHeight, canvas) {
 		throw new Error("Cannot render a base object")
 	}
 }
@@ -376,22 +391,38 @@ class VText extends VObject {
 		return image
 	}
 	/**
-	 * @param {number} width
-	 * @param {number} height
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
 	 * @returns {OffscreenCanvas}
 	 */
-	getVisualRepresentation(width, height) {
-		return this.renders.get(this.width.value * width, this.text.value, this.color.asobj())
+	getVisualRepresentation(screenWidth, screenHeight) {
+		return this.renders.get(this.width.value * screenWidth, this.text.value, this.color.asobj())
 	}
 	/**
-	 * @param {number} width
-	 * @param {number} height
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
+	 * @returns {{ x: number, y: number, width: number, height: number }}
+	 */
+	getPixelBoundingBox(screenWidth, screenHeight) {
+		var render = this.renders.get(this.width.value * screenWidth, this.text.value, this.color.asobj());
+		var posX = (this.centerX.value * screenWidth) - (render.width / 2)
+		var posY = (this.centerY.value * screenHeight) - (render.height / 2)
+		return {
+			x: posX,
+			y: posY,
+			width: render.width,
+			height: render.height
+		}
+	}
+	/**
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
 	 * @param {CanvasRenderingContext2D} canvas
 	 */
-	render(width, height, canvas) {
-		var render = this.renders.get(this.width.value * width, this.text.value, this.color.asobj());
-		var posX = (this.centerX.value * width) - (render.width / 2)
-		var posY = (this.centerY.value * height) - (render.height / 2)
+	render(screenWidth, screenHeight, canvas) {
+		var render = this.renders.get(this.width.value * screenWidth, this.text.value, this.color.asobj());
+		var posX = (this.centerX.value * screenWidth) - (render.width / 2)
+		var posY = (this.centerY.value * screenHeight) - (render.height / 2)
 		canvas.drawImage(render, Math.round(posX), Math.round(posY))
 	}
 }
@@ -405,6 +436,7 @@ class VideoEditorApp {
 		var ctx = this.element_preview.getContext('2d')
 		if (ctx == null) throw new Error("missing canvas context")
 		this.preview_ctx = ctx
+		this.element_preview.addEventListener("click", this.canvasClicked.bind(this))
 		this.blockScrollEventsFromUpdatingCurrentTime = 0
 		// video data
 		this.video_aspect_ratio = 16 / 9;
@@ -414,6 +446,8 @@ class VideoEditorApp {
 		this.objects.push(new VText(1)); // TEST
 		this.objects[0].config.keyframes[0].properties.get("centerX")?.setFrom(new NumericProperty(0.9)) // TEST
 		this.objects[0].config.keyframes[0].properties.get("color")?.setFrom(new ColorProperty(255, 0, 0, 255)) // TEST
+		/** @type {VObject | null} */
+		this.selectedObject = null;
 		// timeline tracking
 		this.timelinePixelsPerSecond = 50;
 		/** @type {Map<VObject, HTMLElement>} */
@@ -433,6 +467,7 @@ class VideoEditorApp {
 		this.timelinePixelsPerSecond *= amount
 		this.element_timeline.setAttribute("style", `--height-per-second: ${this.timelinePixelsPerSecond}px;`)
 		this.element_timeline.scrollTop *= amount
+		this.updateAllTimelineElements()
 	}
 	getNumberOfTimelineTicks() {
 		var maxSeconds = Math.max(...this.objects.flatMap((v) => [v.config.startTime, ...v.config.keyframes.map((w) => w.time)]))
@@ -466,12 +501,14 @@ class VideoEditorApp {
 		for (let o of this.objects) {
 			let e = this.timelineElements.get(o)
 			if (e == undefined) {
-				e = this.element_timeline.appendChild(document.createElement("div"))
-				e.classList.add("timeline-block")
+				e = document.createElement("div");
+				e.classList.add("timeline-block");
+				this.element_timeline.appendChild(e);
+				this.timelineElements.set(o, e);
 			}
 			var beginTime = o.config.startTime
 			var endTime = Math.max(...o.config.keyframes.map((v) => v.time))
-			e.setAttribute("style", `--startY: ${beginTime}; --endY: ${endTime}; --x: 0; --color: #08F;`);
+			e.setAttribute("style", `--startY: ${beginTime}; --endY: ${endTime}; --x: 0; --color: #0C0;`);
 			// Add previews
 			[...e.children].forEach((v) => v.remove())
 			this.addPreviewToTimelineElement(o, e);
@@ -504,21 +541,34 @@ class VideoEditorApp {
 			// save memory :)
 			URL.revokeObjectURL(imageUrl)
 			// fade in :)
-			requestAnimationFrame(() => {
+			requestAnimationFrame(() => { requestAnimationFrame(() => {
 				img.setAttribute("style", `opacity: 1; transition: opacity 1s linear;`);
 				// Add next preview!
 				this.addPreviewToTimelineElement(object, timelineElement)
-			});
+			}); });
 		});
 	}
 	updateCanvas() {
 		this.preview_ctx.clearRect(0, 0, this.element_preview.width, this.element_preview.height)
+		// draw selection background
+		if (this.selectedObject != null && this.selectedObject.isVisibleAtTime(this.currentTime)) {
+			var box = this.selectedObject.getPixelBoundingBox(this.element_preview.width, this.element_preview.height)
+			this.preview_ctx.fillStyle = "#08F3"
+			this.preview_ctx.fillRect(box.x, box.y, box.width, box.height)
+		}
 		// draw objects
 		for (var o of this.objects) {
 			if (o.isVisibleAtTime(this.currentTime)) {
 				o.setCurrentPropertiesToCalculatedPropertiesAtTime(this.currentTime)
 				o.render(this.element_preview.width, this.element_preview.height, this.preview_ctx)
 			}
+		}
+		// draw selection
+		if (this.selectedObject != null && this.selectedObject.isVisibleAtTime(this.currentTime)) {
+			var box = this.selectedObject.getPixelBoundingBox(this.element_preview.width, this.element_preview.height)
+			this.preview_ctx.strokeStyle = "#08F"
+			this.preview_ctx.lineWidth = 3
+			this.preview_ctx.strokeRect(box.x, box.y, box.width, box.height)
 		}
 	}
 	onScroll() {
@@ -561,6 +611,38 @@ class VideoEditorApp {
 		var deltaSeconds = pixels / this.timelinePixelsPerSecond;
 		var targetTime = Math.round((this.currentTime + deltaSeconds) * 5) / 5
 		this.scrollTimelineTo(targetTime)
+	}
+	/** @param {VObject | null} object */
+	setSelectedObject(object) {
+		// Deselect previous object
+		if (this.selectedObject) this.timelineElements.get(this.selectedObject)?.classList.remove("selected")
+		// Select new object
+		this.selectedObject = object
+		if (this.selectedObject) this.timelineElements.get(this.selectedObject)?.classList.add("selected")
+	}
+	/** @param {HTMLElement} timelineElement */
+	selectObjectFromTimelineBlock(timelineElement) {
+		var object = new Map([...this.timelineElements].map((v) => [v[1], v[0]])).get(timelineElement)
+		if (object == undefined) {
+			// Uh...
+			timelineElement.remove()
+			return;
+			// Anyways!
+		}
+		this.setSelectedObject(object)
+	}
+	/** @param {MouseEvent} event */
+	canvasClicked(event) {
+		var x = event.clientX - this.element_preview.getBoundingClientRect().left
+		var y = event.clientY - this.element_preview.getBoundingClientRect().top
+		for (var i = this.objects.length - 1; i >= 0; i--) { // reverse for loop ehehehe
+			if (! this.objects[i].isVisibleAtTime(this.currentTime)) continue;
+			if (Utils.pointInsideRect({ x, y }, this.objects[i].getPixelBoundingBox(this.element_preview.width, this.element_preview.height))) {
+				this.setSelectedObject(this.objects[i]);
+				return;
+			}
+		}
+		this.setSelectedObject(null);
 	}
 }
 

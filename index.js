@@ -338,14 +338,17 @@ class VideoEditorApp {
 		var ctx = this.element_preview.getContext('2d')
 		if (ctx == null) throw new Error("missing canvas context")
 		this.preview_ctx = ctx
+		this.blockScrollEventsFromUpdatingCurrentTime = 0
 		// video data
 		this.video_aspect_ratio = 16 / 9;
+		this.timelinePixelsPerSecond = 50;
 		this.currentTime = 0;
 		/** @type {VObject[]} */
 		this.objects = [];
 		this.objects.push(new VText(1)); // TEST
 		this.objects[0].config.keyframes[0].properties.get("centerX")?.setFrom(new NumericProperty(0.9)) // TEST
 		// initialize dom
+		this.onScroll();
 		this.updateTimelineTicks();
 		this.element_preview.height = Math.round(Math.min(
 			window.innerHeight / 2,
@@ -353,22 +356,29 @@ class VideoEditorApp {
 		))
 		this.element_preview.width = Math.round(this.video_aspect_ratio * this.element_preview.height)
 	}
+	/** @param {number} amount */
+	zoomTimeline(amount) {
+		this.timelinePixelsPerSecond *= amount
+		this.updateTimelineTicks()
+		this.element_timeline.scrollTop *= amount
+	}
+	getNumberOfTimelineTicks() {
+		var maxSeconds = Math.max(...this.objects.flatMap((v) => [v.config.startTime, ...v.config.keyframes.map((w) => w.time)]))
+		var maxPixels = (maxSeconds * this.timelinePixelsPerSecond) + (window.innerHeight * 2/3)
+		return maxPixels / this.timelinePixelsPerSecond;
+	}
 	updateTimelineTicks() {
 		var old_ticks = [...this.element_timeline.querySelectorAll(".background-ticks")]
 		// generate new ticks
-		for (var t = 0; t < 30; t++) { // TEST
-			var pos = t * 50; // TEST
+		var nTicks = this.getNumberOfTimelineTicks();
+		for (var t = 0; t < nTicks; t++) {
+			var pos = t * this.timelinePixelsPerSecond;
 			// make number
 			var n = document.createElement("div")
 			n.setAttribute("style", `--y: ${pos}px;`)
 			n.classList.add("timeline-tick", "background-ticks")
-			this.element_timeline.appendChild(n)
+			this.element_timeline.insertAdjacentElement("afterbegin", n)
 			n.innerText = t.toString();
-			// make bar
-			var bar = document.createElement("div")
-			bar.setAttribute("style", `--y: ${pos}px;`)
-			bar.classList.add("timeline-bar", "background-ticks")
-			this.element_timeline.appendChild(bar)
 		}
 		// remove old ticks
 		old_ticks.forEach((v) => v.remove())
@@ -382,10 +392,15 @@ class VideoEditorApp {
 			}
 		}
 	}
-	onFrame() {
-		// update scroll position
-		var timeline_pos = this.element_timeline.scrollTop;
-		this.currentTime = timeline_pos / 50; // TEST
+	onScroll() {
+		if (this.blockScrollEventsFromUpdatingCurrentTime > 0) {
+			this.blockScrollEventsFromUpdatingCurrentTime -= 1;
+			var timeline_pos = this.currentTime * this.timelinePixelsPerSecond;
+		} else {
+			// update scroll position
+			var timeline_pos = this.element_timeline.scrollTop;
+			this.currentTime = timeline_pos / this.timelinePixelsPerSecond;
+		}
 		// update timeline number
 		var n = this.element_timeline.querySelector(".timeline-tick.current-pos") ?? (() => {
 			var e = document.createElement("div");
@@ -404,6 +419,8 @@ class VideoEditorApp {
 			return e;
 		})();
 		n.setAttribute("style", `--y: ${timeline_pos}px;`)
+	}
+	onFrame() {
 		// redraw canvas
 		this.updateCanvas()
 	}
@@ -412,6 +429,18 @@ class VideoEditorApp {
 			this.onFrame()
 			await new Promise((resolve) => requestAnimationFrame(resolve))
 		}
+	}
+	/** @param {number} targetTime */
+	scrollTimelineTo(targetTime) {
+		this.blockScrollEventsFromUpdatingCurrentTime += 1
+		this.element_timeline.scrollTop = targetTime * this.timelinePixelsPerSecond;
+		this.currentTime = Math.max(targetTime, 0)
+	}
+	/** @param {number} pixels */
+	scrollTimelineByPixels(pixels) {
+		var deltaSeconds = pixels / this.timelinePixelsPerSecond;
+		var targetTime = Math.round((this.currentTime + deltaSeconds) * 10) / 10
+		this.scrollTimelineTo(targetTime)
 	}
 }
 

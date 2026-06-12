@@ -68,7 +68,7 @@ body {
 		</style>
 	</head>
 	<body>
-		<div id="timeline"></div>
+		<div id="timeline" onscroll="app.onScroll()" onwheel="if (event.ctrlKey) { event.preventDefault(); app.zoomTimeline(Math.pow(2, event.deltaY / -300)) }" onclick="app.scrollTimelineByPixels(event.clientY - (window.innerHeight / 2))"></div>
 		<div id="main-panel">
 			<div id="preview-container"></div>
 			<div id="tab-container"></div>

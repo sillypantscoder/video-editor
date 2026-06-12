@@ -145,6 +145,56 @@ class NumericProperty extends ObjectProperty {
 		} else throw new Error("Cannot interpolate NumericProperty with a differently-typed property")
 	}
 }
+class ColorProperty extends ObjectProperty {
+	/**
+	 * @param {number} r
+	 * @param {number} g
+	 * @param {number} b
+	 * @param {number} a
+	 */
+	constructor(r, g, b, a) {
+		super()
+		/** @type {number} */
+		this.r = r
+		/** @type {number} */
+		this.g = g
+		/** @type {number} */
+		this.b = b
+		/** @type {number} */
+		this.a = a
+	}
+	/** @returns {{ r: number, g: number, b: number, a: number }} */
+	asobj() {
+		return { r: this.r, g: this.g, b: this.b, a: this.a }
+	}
+	/** @returns {ColorProperty} */
+	copy() {
+		return new ColorProperty(this.r, this.g, this.b, this.a)
+	}
+	/** @param {ObjectProperty} property */
+	setFrom(property) {
+		if (property instanceof ColorProperty) {
+			this.r = property.r
+			this.g = property.g
+			this.b = property.b
+			this.a = property.a
+		} else throw new Error("Cannot set ColorProperty to a differently-typed property")
+	}
+	/**
+	 * @param {number} time
+	 * @param {ObjectProperty} endpoint
+	 * @returns {ColorProperty}
+	 */
+	interpolate(time, endpoint) {
+		if (endpoint instanceof ColorProperty) {
+			var r = ((1-time) * this.r) + (time * endpoint.r)
+			var g = ((1-time) * this.g) + (time * endpoint.g)
+			var b = ((1-time) * this.b) + (time * endpoint.b)
+			var a = ((1-time) * this.a) + (time * endpoint.a)
+			return new ColorProperty(r, g, b, a)
+		} else throw new Error("Cannot interpolate ColorProperty with a differently-typed property")
+	}
+}
 class StringProperty extends ObjectProperty {
 	/** @param {string} value */
 	constructor(value) {
@@ -242,12 +292,19 @@ class VObject {
 		}
 	}
 	/**
-	 * @param {number} currentTime
+	 * @param {number} width
+	 * @param {number} height
+	 * @returns {OffscreenCanvas}
+	 */
+	getVisualRepresentation(width, height) {
+		throw new Error("Cannot render a base object")
+	}
+	/**
 	 * @param {number} width
 	 * @param {number} height
 	 * @param {CanvasRenderingContext2D} canvas
 	 */
-	render(currentTime, width, height, canvas) {
+	render(width, height, canvas) {
 		throw new Error("Cannot render a base object")
 	}
 }
@@ -262,13 +319,15 @@ class VText extends VObject {
 		var width = new NumericProperty(0.15)
 		// - text
 		var text = new StringProperty("Text goes here asdf asdf asdf asdf asdf")
+		var color = new ColorProperty(255, 255, 255, 255)
 		// create!
 		/** @type {[string, ObjectProperty][]} */
 		var properties = [
 			["centerX", centerX],
 			["centerY", centerY],
 			["width", width],
-			["text", text]
+			["text", text],
+			["color", color]
 		]
 		super(startTime, new Map(properties), 5)
 		// properties
@@ -276,16 +335,18 @@ class VText extends VObject {
 		this.centerY = centerY
 		this.width = width
 		this.text = text
+		this.color = color
 		// rendering cache
-		/** @type {CacheMap<[number, string], OffscreenCanvas>} */
+		/** @type {CacheMap<[number, string, { r: number, g: number, b: number, a: number }], OffscreenCanvas>} */
 		this.renders = new CacheMap(VText.createRender, 10)
 	}
 	/**
 	 * @param {number} width
 	 * @param {string} text
+	 * @param {{ r: number, g: number, b: number, a: number }} color
 	 * @returns {OffscreenCanvas}
 	 */
-	static createRender(width, text) {
+	static createRender(width, text, color) {
 		var words = text.split(/(?= )/i)
 		// Render lines
 		var completedLines = []
@@ -310,19 +371,25 @@ class VText extends VObject {
 		var ctx = image.getContext('2d');
 		if (ctx == null) throw new Error("can't render text because context is null");
 		ctx.font = "14px sans-serif"; // TEST
-		ctx.fillStyle = "white";
+		ctx.fillStyle = `rgba(${color.r}, ${color.g}, ${color.b}, ${color.a / 255.0})`;
 		completedLines.forEach(((ctx) => (line, i) => ctx.fillText(line, 0, (i * size.y) + size.baseline))(ctx))
 		return image
 	}
 	/**
-	 * @param {number} currentTime
+	 * @param {number} width
+	 * @param {number} height
+	 * @returns {OffscreenCanvas}
+	 */
+	getVisualRepresentation(width, height) {
+		return this.renders.get(this.width.value * width, this.text.value, this.color.asobj())
+	}
+	/**
 	 * @param {number} width
 	 * @param {number} height
 	 * @param {CanvasRenderingContext2D} canvas
 	 */
-	render(currentTime, width, height, canvas) {
-		this.setCurrentPropertiesToCalculatedPropertiesAtTime(currentTime)
-		var render = this.renders.get(this.width.value * width, this.text.value)
+	render(width, height, canvas) {
+		var render = this.renders.get(this.width.value * width, this.text.value, this.color.asobj());
 		var posX = (this.centerX.value * width) - (render.width / 2)
 		var posY = (this.centerY.value * height) - (render.height / 2)
 		canvas.drawImage(render, Math.round(posX), Math.round(posY))
@@ -341,25 +408,30 @@ class VideoEditorApp {
 		this.blockScrollEventsFromUpdatingCurrentTime = 0
 		// video data
 		this.video_aspect_ratio = 16 / 9;
-		this.timelinePixelsPerSecond = 50;
 		this.currentTime = 0;
 		/** @type {VObject[]} */
 		this.objects = [];
 		this.objects.push(new VText(1)); // TEST
 		this.objects[0].config.keyframes[0].properties.get("centerX")?.setFrom(new NumericProperty(0.9)) // TEST
+		this.objects[0].config.keyframes[0].properties.get("color")?.setFrom(new ColorProperty(255, 0, 0, 255)) // TEST
+		// timeline tracking
+		this.timelinePixelsPerSecond = 50;
+		/** @type {Map<VObject, HTMLElement>} */
+		this.timelineElements = new Map();
 		// initialize dom
-		this.onScroll();
-		this.updateTimelineTicks();
 		this.element_preview.height = Math.round(Math.min(
 			window.innerHeight / 2,
 			(window.innerWidth * 2/3) / this.video_aspect_ratio
 		))
 		this.element_preview.width = Math.round(this.video_aspect_ratio * this.element_preview.height)
+		this.onScroll();
+		this.updateTimelineTicks();
+		this.updateAllTimelineElements();
 	}
 	/** @param {number} amount */
 	zoomTimeline(amount) {
 		this.timelinePixelsPerSecond *= amount
-		this.updateTimelineTicks()
+		this.element_timeline.setAttribute("style", `--height-per-second: ${this.timelinePixelsPerSecond}px;`)
 		this.element_timeline.scrollTop *= amount
 	}
 	getNumberOfTimelineTicks() {
@@ -372,10 +444,9 @@ class VideoEditorApp {
 		// generate new ticks
 		var nTicks = this.getNumberOfTimelineTicks();
 		for (var t = 0; t < nTicks; t++) {
-			var pos = t * this.timelinePixelsPerSecond;
 			// make number
 			var n = document.createElement("div")
-			n.setAttribute("style", `--y: ${pos}px;`)
+			n.setAttribute("style", `--y: ${t};`)
 			n.classList.add("timeline-tick", "background-ticks")
 			this.element_timeline.insertAdjacentElement("afterbegin", n)
 			n.innerText = t.toString();
@@ -383,19 +454,76 @@ class VideoEditorApp {
 		// remove old ticks
 		old_ticks.forEach((v) => v.remove())
 	}
+	updateAllTimelineElements() {
+		// remove old elements
+		for (var k of [...this.timelineElements.keys()]) {
+			if (! this.objects.includes(k)) {
+				this.timelineElements.get(k)?.remove()
+				this.timelineElements.delete(k)
+			}
+		}
+		// update element for each object
+		for (let o of this.objects) {
+			let e = this.timelineElements.get(o)
+			if (e == undefined) {
+				e = this.element_timeline.appendChild(document.createElement("div"))
+				e.classList.add("timeline-block")
+			}
+			var beginTime = o.config.startTime
+			var endTime = Math.max(...o.config.keyframes.map((v) => v.time))
+			e.setAttribute("style", `--startY: ${beginTime}; --endY: ${endTime}; --x: 0; --color: #08F;`);
+			// Add previews
+			[...e.children].forEach((v) => v.remove())
+			this.addPreviewToTimelineElement(o, e);
+		}
+	}
+	/**
+	 * @param {VObject} object
+	 * @param {HTMLElement} timelineElement
+	 */
+	async addPreviewToTimelineElement(object, timelineElement) {
+		var previewHeight = (timelineElement.lastElementChild?.getBoundingClientRect().bottom ?? timelineElement.getBoundingClientRect().top) - timelineElement.getBoundingClientRect().top;
+		if (previewHeight > timelineElement.getBoundingClientRect().height) return; // done creating previews for this element!
+
+		var time = object.config.startTime + (previewHeight / this.timelinePixelsPerSecond)
+		object.setCurrentPropertiesToCalculatedPropertiesAtTime(time)
+
+		var canvas = object.getVisualRepresentation(this.element_preview.width, this.element_preview.height)
+
+		// convert to blob URL
+		var blob = await canvas.convertToBlob({ type: 'image/png' });
+		var imageUrl = URL.createObjectURL(blob);
+		// draw to image
+		var img = new Image();
+		img.setAttribute("style", `opacity: 0;`)
+		img.src = imageUrl;
+		timelineElement.appendChild(img);
+
+		// When the image has loaded:
+		img.addEventListener("load", () => {
+			// save memory :)
+			URL.revokeObjectURL(imageUrl)
+			// fade in :)
+			requestAnimationFrame(() => {
+				img.setAttribute("style", `opacity: 1; transition: opacity 1s linear;`);
+				// Add next preview!
+				this.addPreviewToTimelineElement(object, timelineElement)
+			});
+		});
+	}
 	updateCanvas() {
 		this.preview_ctx.clearRect(0, 0, this.element_preview.width, this.element_preview.height)
 		// draw objects
 		for (var o of this.objects) {
 			if (o.isVisibleAtTime(this.currentTime)) {
-				o.render(this.currentTime, this.element_preview.width, this.element_preview.height, this.preview_ctx)
+				o.setCurrentPropertiesToCalculatedPropertiesAtTime(this.currentTime)
+				o.render(this.element_preview.width, this.element_preview.height, this.preview_ctx)
 			}
 		}
 	}
 	onScroll() {
 		if (this.blockScrollEventsFromUpdatingCurrentTime > 0) {
 			this.blockScrollEventsFromUpdatingCurrentTime -= 1;
-			var timeline_pos = this.currentTime * this.timelinePixelsPerSecond;
 		} else {
 			// update scroll position
 			var timeline_pos = this.element_timeline.scrollTop;
@@ -408,17 +536,9 @@ class VideoEditorApp {
 			e.classList.add("timeline-tick", "current-pos");
 			return e;
 		})();
-		n.setAttribute("style", `--y: ${timeline_pos}px;`)
+		n.setAttribute("style", `--y: ${this.currentTime};`)
 		var timelineNumberText = String(Math.round(this.currentTime * 100) / 100);
 		if (n.textContent != timelineNumberText) n.textContent = timelineNumberText
-		// update timeline bar
-		var n = this.element_timeline.querySelector(".timeline-bar.current-pos") ?? (() => {
-			var e = document.createElement("div");
-			this.element_timeline.appendChild(e);
-			e.classList.add("timeline-bar", "current-pos");
-			return e;
-		})();
-		n.setAttribute("style", `--y: ${timeline_pos}px;`)
 	}
 	onFrame() {
 		// redraw canvas
@@ -439,7 +559,7 @@ class VideoEditorApp {
 	/** @param {number} pixels */
 	scrollTimelineByPixels(pixels) {
 		var deltaSeconds = pixels / this.timelinePixelsPerSecond;
-		var targetTime = Math.round((this.currentTime + deltaSeconds) * 10) / 10
+		var targetTime = Math.round((this.currentTime + deltaSeconds) * 5) / 5
 		this.scrollTimelineTo(targetTime)
 	}
 }

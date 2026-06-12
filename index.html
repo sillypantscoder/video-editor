@@ -17,17 +17,19 @@ body {
 	width: 25%;
 	position: relative;
 	overflow-y: scroll;
+	--height-per-second: 50px;
 	& > .timeline-tick {
 		font-size: 0.75em;
 		/* positioning */
 		position: absolute;
-		top: calc(50vh + var(--y) - 0.5em);
+		top: calc(50vh + (var(--y) * var(--height-per-second)) - 0.5em);
 		left: 0.125em;
 		width: calc(100% - 0.125em);
 		/* display */
 		color: #888;
 		&.current-pos {
 			color: white;
+			z-index: 1;
 		}
 		/* line */
 		display: flex;
@@ -41,6 +43,24 @@ body {
 		}
 		&.current-pos::after {
 			border-bottom-color: white;
+		}
+	}
+	& > .timeline-block {
+		position: absolute;
+		top: calc(50vh + (var(--startY) * var(--height-per-second)));
+		left: calc((var(--x) * 3em) + 2em);
+		box-sizing: border-box;
+		width: 3em;
+		height: calc((var(--endY) - var(--startY)) * var(--height-per-second));
+		border: 3px solid var(--color);
+		border-radius: 0.5em;
+		background-color: color-mix(in srgb, var(--color) 20%, black 80%);
+		/* image styles */
+		line-height: 0;
+		overflow-y: hidden;
+		& > img {
+			width: 100%;
+			margin: 0.25em 0;
 		}
 	}
 }

@@ -28,6 +28,16 @@ class Utils {
 		return point.x >= rect.x && point.x <= rect.x + rect.width && point.y >= rect.y && point.y <= rect.y + rect.height
 	}
 	/**
+	 * @param {number} num
+	 * @param {number} bits
+	 */
+	static roundToSignificantDigitsBinary(num, bits) {
+		if (num === 0) return 0;
+		var exponent = Math.floor(Math.log2(Math.abs(num)));
+		var shift = Math.pow(2, bits - 1 - exponent);
+		return Math.round(num * shift) / shift;
+	}
+	/**
 	 * Uses canvas.measureText to compute and return the width of the given text of given font in pixels.
 	 *
 	 * @param {String} text The text to be rendered.
@@ -235,41 +245,89 @@ class StringProperty extends ObjectProperty {
 /** @template {number[]} L */
 class Handle {
 	/**
+	 * @param {VideoEditorApp} app
 	 * @param {VObject} object
 	 * @param {L} initialPos
 	 */
-	constructor(object, initialPos) {
+	constructor(app, object, initialPos) {
+		this.app = app
 		this.object = object
 		/** @type {L} */
 		this.pos = initialPos
 		this.element = document.createElement("div")
 		this.element.classList.add("handle")
+		this.updatePos()
 	}
+	updatePos() {}
 	/** @param {L} newPos */
 	moveTo(newPos) {
 		this.pos = newPos
+		this.updatePos()
+	}
+	updateFromObject() {
+		this.updatePos()
 	}
 }
 /** @extends {Handle<[number]>} */
 class StartTimeHandle extends Handle {
 	/**
+	 * @param {VideoEditorApp} app
 	 * @param {VObject} object
 	 */
-	constructor(object) {
-		super(object, [object.config.startTime])
+	constructor(app, object) {
+		super(app, object, [object.config.startTime])
+	}
+	updatePos() {
 		this.element.setAttribute("style", `--y: ${this.pos[0]}; --x: 0;`)
 	}
 	/** @param {[number]} newPos */
 	moveTo(newPos) {
+		newPos[0] = Math.max(newPos[0], 0)
 		// update pos
 		super.moveTo(newPos)
-		// set element pos
-		this.element.setAttribute("style", `--y: ${this.pos[0]}; --x: 0;`)
 		// set object start time
 		var delta = this.pos[0] - this.object.config.startTime
 		this.object.config.startTime = this.pos[0]
 		// set keyframe times
 		this.object.config.keyframes.forEach((v) => v.time += delta)
+	}
+	updateFromObject() {
+		this.pos[0] = this.object.config.startTime
+		super.updateFromObject();
+	}
+}
+/** @extends {Handle<[number]>} */
+class KeyframeTimeHandle extends Handle {
+	/**
+	 * @param {VideoEditorApp} app
+	 * @param {VObject} object
+	 * @param {number} keyframe_idx
+	 */
+	constructor(app, object, keyframe_idx) {
+		super(app, object, [object.config.keyframes[keyframe_idx].time])
+		this.keyframe_idx = keyframe_idx;
+	}
+	updatePos() {
+		this.element.setAttribute("style", `--y: ${this.pos[0]}; --x: 0;`)
+	}
+	/** @param {[number]} newPos */
+	moveTo(newPos) {
+		newPos[0] = Math.max(Math.min(newPos[0], this.object.config.keyframes[this.keyframe_idx+1]?.time ?? Infinity), this.object.config.keyframes[this.keyframe_idx-1]?.time ?? this.object.config.startTime)
+		if (newPos[0] == this.object.config.keyframes[this.keyframe_idx].time) return; // did not move
+		// update pos
+		super.moveTo(newPos)
+		// set keyframe time
+		this.object.config.keyframes[this.keyframe_idx].time = this.pos[0]
+		// update previews
+		var previewElement = this.app.timelineElements.get(this.object)
+		if (previewElement != undefined) {
+			[...previewElement.children].forEach((v) => v.remove())
+			this.app.addPreviewToTimelineElement(this.object, previewElement)
+		}
+	}
+	updateFromObject() {
+		this.pos[0] = this.object.config.keyframes[this.keyframe_idx].time
+		super.updateFromObject();
 	}
 }
 
@@ -561,11 +619,27 @@ class VideoEditorApp {
 	/**
 	 * @param {VObject} object
 	 * @param {HTMLElement} timelineElement
+	 * @param {undefined | number} [startTime]
 	 */
-	async addPreviewToTimelineElement(object, timelineElement) {
-		var previewHeight = (timelineElement.lastElementChild?.getBoundingClientRect().bottom ?? timelineElement.getBoundingClientRect().top) - timelineElement.getBoundingClientRect().top;
-		if (previewHeight > timelineElement.getBoundingClientRect().height) return; // done creating previews for this element!
+	async addPreviewToTimelineElement(object, timelineElement, startTime) {
+		// Check time
+		if (startTime == undefined) {
+			startTime = Date.now()
+			timelineElement.dataset.adding_previews_started_at = String(startTime)
+		} else if (timelineElement.dataset.adding_previews_started_at != String(startTime)) {
+			// Another function is updating the previews
+			return;
+		}
 
+		// Get the height of previous preview elements
+		var previewHeight = (timelineElement.lastElementChild?.getBoundingClientRect().bottom ?? timelineElement.getBoundingClientRect().top) - timelineElement.getBoundingClientRect().top;
+		if (previewHeight > timelineElement.getBoundingClientRect().height) {
+			// done creating previews for this element!
+			delete timelineElement.dataset.adding_previews_started_at
+			return;
+		}
+
+		// Render object
 		var time = object.config.startTime + (previewHeight / this.timelinePixelsPerSecond)
 		object.setCurrentPropertiesToCalculatedPropertiesAtTime(time)
 
@@ -588,18 +662,12 @@ class VideoEditorApp {
 			requestAnimationFrame(() => { requestAnimationFrame(() => {
 				img.setAttribute("style", `opacity: 1; transition: opacity 1s linear;`);
 				// Add next preview!
-				this.addPreviewToTimelineElement(object, timelineElement)
+				this.addPreviewToTimelineElement(object, timelineElement, startTime)
 			}); });
 		});
 	}
 	updateCanvas() {
 		this.preview_ctx.clearRect(0, 0, this.element_preview.width, this.element_preview.height)
-		// draw selection background
-		if (this.selection != null && this.selection.object.isVisibleAtTime(this.currentTime)) {
-			var box = this.selection.object.getPixelBoundingBox(this.element_preview.width, this.element_preview.height)
-			this.preview_ctx.fillStyle = "#08F3"
-			this.preview_ctx.fillRect(box.x, box.y, box.width, box.height)
-		}
 		// draw objects
 		for (var o of this.objects) {
 			if (o.isVisibleAtTime(this.currentTime)) {
@@ -610,6 +678,8 @@ class VideoEditorApp {
 		// draw selection
 		if (this.selection != null && this.selection.object.isVisibleAtTime(this.currentTime)) {
 			var box = this.selection.object.getPixelBoundingBox(this.element_preview.width, this.element_preview.height)
+			this.preview_ctx.fillStyle = "#08F3"
+			this.preview_ctx.fillRect(box.x, box.y, box.width, box.height)
 			this.preview_ctx.strokeStyle = "#08F"
 			this.preview_ctx.lineWidth = 3
 			this.preview_ctx.strokeRect(box.x, box.y, box.width, box.height)
@@ -652,9 +722,10 @@ class VideoEditorApp {
 	}
 	/** @param {number} pixels */
 	scrollTimelineByPixels(pixels) {
-		var deltaSeconds = pixels / this.timelinePixelsPerSecond;
-		var targetTime = Math.round((this.currentTime + deltaSeconds) * 5) / 5
-		this.scrollTimelineTo(targetTime)
+		var targetTimeExact = this.currentTime + (pixels / this.timelinePixelsPerSecond);
+		var stepSize = Utils.roundToSignificantDigitsBinary(12.5 / this.timelinePixelsPerSecond, 1)
+		var targetTimeRounded = Math.round(targetTimeExact / stepSize) * stepSize
+		this.scrollTimelineTo(targetTimeRounded)
 	}
 	/** @param {VObject | null} object */
 	setSelectedObject(object) {
@@ -677,9 +748,15 @@ class VideoEditorApp {
 			}
 			// Start time handle
 			{
-				let start_time_handle = new StartTimeHandle(object);
+				let start_time_handle = new StartTimeHandle(this, object);
 				this.selection.timelineHandles.push(start_time_handle);
 				this.element_timeline.appendChild(start_time_handle.element);
+			}
+			// Keyframe handle
+			for (var i = 0; i < object.config.keyframes.length; i++) {
+				let keyframe_handle = new KeyframeTimeHandle(this, object, i);
+				this.selection.timelineHandles.push(keyframe_handle);
+				this.element_timeline.appendChild(keyframe_handle.element);
 			}
 		}
 		if (this.selection != null) this.timelineElements.get(this.selection.object)?.classList.add("selected")
@@ -694,6 +771,15 @@ class VideoEditorApp {
 			// Anyways!
 		}
 		this.setSelectedObject(object)
+	}
+	updateHandles() {
+		if (this.selection == null) return;
+		for (let h of this.selection.timelineHandles) {
+			h.updateFromObject()
+		}
+		for (let h of this.selection.viewportHandles) {
+			h.updateFromObject()
+		}
 	}
 	/** @param {MouseEvent} event */
 	canvasClicked(event) {
@@ -735,10 +821,13 @@ class VideoEditorApp {
 		if (this.selection.draggingHandle.isTimeline) {
 			var handle = this.selection.draggingHandle.handle
 			// Move handle
-			var targetTime = this.currentTime + ((mouseY - (window.innerHeight / 2)) / this.timelinePixelsPerSecond)
-			handle.moveTo([targetTime])
+			var targetTimeExact = this.currentTime + ((mouseY - (window.innerHeight / 2)) / this.timelinePixelsPerSecond)
+			var stepSize = Utils.roundToSignificantDigitsBinary(12.5 / this.timelinePixelsPerSecond, 1)
+			var targetTimeRounded = Math.round(targetTimeExact / stepSize) * stepSize
+			handle.moveTo([targetTimeRounded])
 		}
 		this.updateAllTimelineElements(false)
+		this.updateHandles()
 	}
 	stopDraggingHandle() {
 		if (this.selection == null || this.selection.draggingHandle == null) return;

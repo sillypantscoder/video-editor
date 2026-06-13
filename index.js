@@ -364,37 +364,66 @@ class InvisibleObjectMoveHandle extends Handle {
 	}
 }
 /** @extends {Handle<[number, number]>} */
-class ObjectMoveHandle extends Handle {
+class ObjectRescaleHandle extends Handle {
 	/**
 	 * @param {VideoEditorApp} app
 	 * @param {VObject} object
-	 * @param {(screenWidth: number, screenHeight: number) => { x: number, y: number }} get_pos
+	 * @param {{ x: 1 | -1, y: 1 | -1 }} corner
 	 * @param {(screenWidth: number, screenHeight: number, delta: { x: number, y: number }, keyframe_number: number) => void} move_by
+	 * @param {(delta: number, keyframe_number: number) => void} rescale_by
 	 * @param {number} keyframe_number
 	 */
-	constructor(app, object, get_pos, move_by, keyframe_number) {
-		var initialPos = get_pos(app.element_preview.width, app.element_preview.height)
+	constructor(app, object, corner, move_by, rescale_by, keyframe_number) {
+		var initialPos = ObjectRescaleHandle.get_pos(app.element_preview.width, app.element_preview.height, object, corner)
 		super(app, object, [initialPos.x, initialPos.y])
-		this.get_pos = get_pos
+		this.corner = corner
 		this.move_by_callback = move_by
+		this.rescale_by_callback = rescale_by
 		this.keyframe_number = keyframe_number
+	}
+	/**
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
+	 * @param {VObject} object
+	 * @param {{ x: 1 | -1, y: 1 | -1 }} corner
+	 */
+	static get_pos(screenWidth, screenHeight, object, corner) {
+		var box = object.getPixelBoundingBox(screenWidth, screenHeight)
+		return {
+			x: box.x + (corner.x == 1 ? box.width : 0),
+			y: box.y + (corner.y == 1 ? box.height : 0)
+		}
 	}
 	updatePos() {
 		this.element.setAttribute("style", ` --x: ${this.pos[0] - (app.element_preview.width / 2)}px; --y: ${this.pos[1] - (app.element_preview.height / 2)}px;`)
 	}
 	/** @param {[number, number]} newPos */
 	moveTo(newPos) {
-		var difference = {
-			x: newPos[0] - this.pos[0],
-			y: newPos[1] - this.pos[1]
+		var oppositePoint = ObjectRescaleHandle.get_pos(this.app.element_preview.width, this.app.element_preview.height, this.object, { x: this.corner.x == -1 ? 1 : -1, y: this.corner.y == -1 ? 1 : -1 })
+		var previousDifference = {
+			x: this.pos[0] - oppositePoint.x,
+			y: this.pos[1] - oppositePoint.y
+		}
+		var newDifference = {
+			x: newPos[0] - oppositePoint.x,
+			y: newPos[1] - oppositePoint.y
 		}
 		// update pos
 		super.moveTo(newPos)
-		// move by
-		this.move_by_callback(this.app.element_preview.width, this.app.element_preview.height, difference, this.keyframe_number)
+		// scale and move the object (only along the current rescale direction)
+		// [NOTE: The next 7 lines were written by AI. I think it's fine. (Also, I really do not want to do all this math myself.)]
+		var previousDistance = Math.hypot(previousDifference.x, previousDifference.y)
+		var alignedNewDistance = ((newDifference.x * previousDifference.x) + (newDifference.y * previousDifference.y)) / previousDistance
+		var scaleFactor = alignedNewDistance / previousDistance
+		var moveAmount = {
+			x: previousDifference.x * (alignedNewDistance - previousDistance) / (2 * previousDistance),
+			y: previousDifference.y * (alignedNewDistance - previousDistance) / (2 * previousDistance)
+		}
+		this.rescale_by_callback(scaleFactor, this.keyframe_number)
+		this.move_by_callback(this.app.element_preview.width, this.app.element_preview.height, moveAmount, this.keyframe_number)
 	}
 	updateFromObject() {
-		var pos = this.get_pos(this.app.element_preview.width, this.app.element_preview.height)
+		var pos = ObjectRescaleHandle.get_pos(this.app.element_preview.width, this.app.element_preview.height, this.object, this.corner)
 		this.pos[0] = pos.x
 		this.pos[1] = pos.y
 		super.updateFromObject();
@@ -622,7 +651,10 @@ class VText extends VObject {
 	 */
 	getViewportHandles(keyframe_number, app) {
 		return [
-			new ObjectMoveHandle(app, this, (screenWidth, screenHeight) => this.getPixelBoundingBox(screenWidth, screenHeight), this.moveByPixels.bind(this), keyframe_number)
+			new ObjectRescaleHandle(app, this, { x: -1, y: -1 }, this.moveByPixels.bind(this), this.rescaleBy.bind(this), keyframe_number),
+			new ObjectRescaleHandle(app, this, { x: 1, y: -1 }, this.moveByPixels.bind(this), this.rescaleBy.bind(this), keyframe_number),
+			new ObjectRescaleHandle(app, this, { x: -1, y: 1 }, this.moveByPixels.bind(this), this.rescaleBy.bind(this), keyframe_number),
+			new ObjectRescaleHandle(app, this, { x: 1, y: 1 }, this.moveByPixels.bind(this), this.rescaleBy.bind(this), keyframe_number)
 		]
 	}
 	/**
@@ -636,6 +668,17 @@ class VText extends VObject {
 		if (configuredXPos instanceof NumericProperty) configuredXPos.value += delta.x / screenWidth
 		var configuredYPos = keyframe_number == -1 ? this.config.initialProperties.get("centerY") : this.config.keyframes[keyframe_number].properties.get("centerY")
 		if (configuredYPos instanceof NumericProperty) configuredYPos.value += delta.y / screenHeight
+	}
+	/**
+	 * @param {number} delta
+	 * @param {number} keyframe_number
+	 */
+	rescaleBy(delta, keyframe_number) {
+		if (delta <= 0 || this.textSize.value * delta < 1) return;
+		var configuredWidth = keyframe_number == -1 ? this.config.initialProperties.get("width") : this.config.keyframes[keyframe_number].properties.get("width")
+		if (configuredWidth instanceof NumericProperty) configuredWidth.value *= delta
+		var configuredTextSize = keyframe_number == -1 ? this.config.initialProperties.get("textSize") : this.config.keyframes[keyframe_number].properties.get("textSize")
+		if (configuredTextSize instanceof NumericProperty) configuredTextSize.value *= delta
 	}
 }
 

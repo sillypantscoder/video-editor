@@ -16,6 +16,7 @@ body {
 #timeline {
 	width: 25%;
 	position: relative;
+	user-select: none;
 	overflow-y: scroll;
 	--height-per-second: 50px;
 	& > .timeline-tick {
@@ -70,6 +71,26 @@ body {
 			box-shadow: 0px 5px 10px 2.5px blue;
 		}
 	}
+	& > .handle {
+		/* Timeline handle styling */
+		top: calc(50vh + (var(--y) * var(--height-per-second)) - 0.75em);
+		left: calc((var(--x) * 3em) + 2.75em);
+	}
+}
+.handle {
+	position: absolute;
+	box-sizing: border-box;
+	width: 1.5em;
+	height: 1.5em;
+	border: 3px solid #08F;
+	background-color: white;
+	border-radius: 50%;
+	&:hover {
+		background-color: #8CF;
+	}
+	&.active {
+		background-color: #08F;
+	}
 }
 #main-panel {
 	width: 75%;
@@ -98,7 +119,9 @@ body {
 		<div id="timeline"
 			onscroll="app.onScroll()"
 			onwheel="if (event.ctrlKey) { event.preventDefault(); app.zoomTimeline(Math.pow(2, event.deltaY / -300)) }"
-			onclick="if (event.target.classList.contains('timeline-block')) { app.selectObjectFromTimelineBlock(event.target) } else if (app.selectedObject != null) { app.setSelectedObject(null) } else { app.scrollTimelineByPixels(event.clientY - (window.innerHeight / 2)) }"
+			onmousedown="if (event.target.classList.contains('handle')) { app.startDraggingHandleFromElement(event.target, event.clientY); } else if (event.target.classList.contains('timeline-block')) { app.selectObjectFromTimelineBlock(event.target) } else if (app.selection != null) { app.setSelectedObject(null) } else { app.scrollTimelineByPixels(event.clientY - (window.innerHeight / 2)) }"
+			onmousemove="if (app.selection?.draggingHandle != null) { app.moveDraggingHandle(0, event.clientY); }"
+			onmouseup="if (app.selection?.draggingHandle != null) { app.stopDraggingHandle(); }"
 		></div>
 		<div id="main-panel">
 			<div id="preview-container"></div>

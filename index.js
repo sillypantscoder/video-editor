@@ -330,6 +330,43 @@ class KeyframeTimeHandle extends Handle {
 		super.updateFromObject();
 	}
 }
+/** @extends {Handle<[number, number]>} */
+class ObjectMoveHandle extends Handle {
+	/**
+	 * @param {VideoEditorApp} app
+	 * @param {VObject} object
+	 * @param {(screenWidth: number, screenHeight: number) => { x: number, y: number }} get_pos
+	 * @param {(screenWidth: number, screenHeight: number, delta: { x: number, y: number }, keyframe_number: number) => void} move_by
+	 * @param {number} keyframe_number
+	 */
+	constructor(app, object, get_pos, move_by, keyframe_number) {
+		var initialPos = get_pos(app.element_preview.width, app.element_preview.height)
+		super(app, object, [initialPos.x, initialPos.y])
+		this.get_pos = get_pos
+		this.move_by_callback = move_by
+		this.keyframe_number = keyframe_number
+	}
+	updatePos() {
+		this.element.setAttribute("style", ` --x: ${this.pos[0] - (app.element_preview.width / 2)}px; --y: ${this.pos[1] - (app.element_preview.height / 2)}px;`)
+	}
+	/** @param {[number, number]} newPos */
+	moveTo(newPos) {
+		var difference = {
+			x: newPos[0] - this.pos[0],
+			y: newPos[1] - this.pos[1]
+		}
+		// update pos
+		super.moveTo(newPos)
+		// move by
+		this.move_by_callback(this.app.element_preview.width, this.app.element_preview.height, difference, this.keyframe_number)
+	}
+	updateFromObject() {
+		var pos = this.get_pos(this.app.element_preview.width, this.app.element_preview.height)
+		this.pos[0] = pos.x
+		this.pos[1] = pos.y
+		super.updateFromObject();
+	}
+}
 
 class VObject {
 	/**
@@ -421,6 +458,14 @@ class VObject {
 	render(screenWidth, screenHeight, canvas) {
 		throw new Error("Cannot render a base object")
 	}
+	/**
+	 * @param {number} keyframe_number
+	 * @param {VideoEditorApp} app
+	 * @returns {Handle<[number, number]>[]}
+	 */
+	getViewportHandles(keyframe_number, app) {
+		throw new Error("Cannot get handles of a base object")
+	}
 }
 class VText extends VObject {
 	/**
@@ -434,6 +479,7 @@ class VText extends VObject {
 		// - text
 		var text = new StringProperty("Text goes here asdf asdf asdf asdf asdf")
 		var color = new ColorProperty(255, 255, 255, 255)
+		var textSize = new NumericProperty(16)
 		// create!
 		/** @type {[string, ObjectProperty][]} */
 		var properties = [
@@ -441,7 +487,8 @@ class VText extends VObject {
 			["centerY", centerY],
 			["width", width],
 			["text", text],
-			["color", color]
+			["color", color],
+			["textSize", textSize]
 		]
 		super(startTime, new Map(properties), 5)
 		// properties
@@ -450,17 +497,19 @@ class VText extends VObject {
 		this.width = width
 		this.text = text
 		this.color = color
+		this.textSize = textSize
 		// rendering cache
-		/** @type {CacheMap<[number, string, { r: number, g: number, b: number, a: number }], OffscreenCanvas>} */
+		/** @type {CacheMap<[number, string, { r: number, g: number, b: number, a: number }, number], OffscreenCanvas>} */
 		this.renders = new CacheMap(VText.createRender, 10)
 	}
 	/**
 	 * @param {number} width
 	 * @param {string} text
 	 * @param {{ r: number, g: number, b: number, a: number }} color
+	 * @param {number} textSize
 	 * @returns {OffscreenCanvas}
 	 */
-	static createRender(width, text, color) {
+	static createRender(width, text, color, textSize) {
 		var words = text.split(/(?= )/i)
 		// Render lines
 		var completedLines = []
@@ -468,7 +517,7 @@ class VText extends VObject {
 		for (var word of words) {
 			// Find size
 			var lineWithWord = currentLine + word
-			var size = Utils.getTextSize(lineWithWord, "14px sans-serif")
+			var size = Utils.getTextSize(lineWithWord, textSize + "px sans-serif")
 			if (size.x > width) {
 				// Next line
 				completedLines.push(currentLine)
@@ -480,11 +529,11 @@ class VText extends VObject {
 		}
 		if (currentLine.length > 0) completedLines.push(currentLine)
 		// Render
-		var size = Utils.getTextSize("A g", "14px sans-serif")
+		var size = Utils.getTextSize("A g", textSize + "px sans-serif")
 		var image = new OffscreenCanvas(width, completedLines.length * size.y)
 		var ctx = image.getContext('2d');
 		if (ctx == null) throw new Error("can't render text because context is null");
-		ctx.font = "14px sans-serif"; // TEST
+		ctx.font = textSize + "px sans-serif";
 		ctx.fillStyle = `rgba(${color.r}, ${color.g}, ${color.b}, ${color.a / 255.0})`;
 		completedLines.forEach(((ctx) => (line, i) => ctx.fillText(line, 0, (i * size.y) + size.baseline))(ctx))
 		return image
@@ -495,7 +544,7 @@ class VText extends VObject {
 	 * @returns {OffscreenCanvas}
 	 */
 	getVisualRepresentation(screenWidth, screenHeight) {
-		return this.renders.get(this.width.value * screenWidth, this.text.value, this.color.asobj())
+		return this.renders.get(this.width.value * screenWidth, this.text.value, this.color.asobj(), this.textSize.value)
 	}
 	/**
 	 * @param {number} screenWidth
@@ -503,7 +552,7 @@ class VText extends VObject {
 	 * @returns {{ x: number, y: number, width: number, height: number }}
 	 */
 	getPixelBoundingBox(screenWidth, screenHeight) {
-		var render = this.renders.get(this.width.value * screenWidth, this.text.value, this.color.asobj());
+		var render = this.renders.get(this.width.value * screenWidth, this.text.value, this.color.asobj(), this.textSize.value);
 		var posX = (this.centerX.value * screenWidth) - (render.width / 2)
 		var posY = (this.centerY.value * screenHeight) - (render.height / 2)
 		return {
@@ -519,10 +568,32 @@ class VText extends VObject {
 	 * @param {CanvasRenderingContext2D} canvas
 	 */
 	render(screenWidth, screenHeight, canvas) {
-		var render = this.renders.get(this.width.value * screenWidth, this.text.value, this.color.asobj());
+		var render = this.renders.get(this.width.value * screenWidth, this.text.value, this.color.asobj(), this.textSize.value);
 		var posX = (this.centerX.value * screenWidth) - (render.width / 2)
 		var posY = (this.centerY.value * screenHeight) - (render.height / 2)
 		canvas.drawImage(render, Math.round(posX), Math.round(posY))
+	}
+	/**
+	 * @param {number} keyframe_number
+	 * @param {VideoEditorApp} app
+	 * @returns {Handle<[number, number]>[]}
+	 */
+	getViewportHandles(keyframe_number, app) {
+		return [
+			new ObjectMoveHandle(app, this, (screenWidth, screenHeight) => this.getPixelBoundingBox(screenWidth, screenHeight), this.moveByPixels.bind(this), keyframe_number)
+		]
+	}
+	/**
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
+	 * @param {{ x: number, y: number }} delta
+	 * @param {number} keyframe_number
+	 */
+	moveByPixels(screenWidth, screenHeight, delta, keyframe_number) {
+		var configuredXPos = keyframe_number == -1 ? this.config.initialProperties.get("centerX") : this.config.keyframes[keyframe_number].properties.get("centerX")
+		if (configuredXPos instanceof NumericProperty) configuredXPos.value += delta.x / screenWidth
+		var configuredYPos = keyframe_number == -1 ? this.config.initialProperties.get("centerY") : this.config.keyframes[keyframe_number].properties.get("centerY")
+		if (configuredYPos instanceof NumericProperty) configuredYPos.value += delta.y / screenHeight
 	}
 }
 
@@ -703,6 +774,8 @@ class VideoEditorApp {
 		n.setAttribute("style", `--y: ${this.currentTime};`)
 		var timelineNumberText = String(Math.round(this.currentTime * 100) / 100);
 		if (n.textContent != timelineNumberText) n.textContent = timelineNumberText
+		// Update selection handles
+		this.updateViewportHandles();
 	}
 	onFrame() {
 		// redraw canvas
@@ -758,6 +831,8 @@ class VideoEditorApp {
 				this.selection.timelineHandles.push(keyframe_handle);
 				this.element_timeline.appendChild(keyframe_handle.element);
 			}
+			// Viewport handles
+			this.updateViewportHandles();
 		}
 		if (this.selection != null) this.timelineElements.get(this.selection.object)?.classList.add("selected")
 	}
@@ -772,13 +847,28 @@ class VideoEditorApp {
 		}
 		this.setSelectedObject(object)
 	}
-	updateHandles() {
+	updateHandlePositions() {
 		if (this.selection == null) return;
 		for (let h of this.selection.timelineHandles) {
 			h.updateFromObject()
 		}
 		for (let h of this.selection.viewportHandles) {
 			h.updateFromObject()
+		}
+	}
+	updateViewportHandles() {
+		if (this.selection == null) return;
+		// Viewport Handles
+		let idx = this.selection.object.config.keyframes.findIndex((v) => v.time == this.currentTime);
+		var keyframeNumber = this.selection.object.config.startTime == this.currentTime ? -1 : (idx == -1 ? null : idx);
+		// Remove old handles
+		[...this.selection.viewportHandles].forEach((v) => v.element.remove())
+		this.selection.viewportHandles = []
+		// Add handles
+		if (keyframeNumber != null) {
+			this.selection.object.setCurrentPropertiesToCalculatedPropertiesAtTime(this.currentTime)
+			this.selection.viewportHandles = [...this.selection.object.getViewportHandles(keyframeNumber, this)]
+			this.selection.viewportHandles.forEach((v) => this.element_preview.parentNode?.appendChild(v.element))
 		}
 	}
 	/** @param {MouseEvent} event */
@@ -788,7 +878,10 @@ class VideoEditorApp {
 		for (var i = this.objects.length - 1; i >= 0; i--) { // reverse for loop ehehehe
 			if (! this.objects[i].isVisibleAtTime(this.currentTime)) continue;
 			if (Utils.pointInsideRect({ x, y }, this.objects[i].getPixelBoundingBox(this.element_preview.width, this.element_preview.height))) {
-				this.setSelectedObject(this.objects[i]);
+				// De-select current object or select this object
+				if (this.selection != null) {
+					if (this.selection.object != this.objects[i]) this.setSelectedObject(null);
+				} else this.setSelectedObject(this.objects[i]);
 				return;
 			}
 		}
@@ -797,19 +890,37 @@ class VideoEditorApp {
 	/**
 	 * @param {HTMLDivElement} element
 	 * @param {number} mouseY
+	 * @param {number} mouseX
 	 */
-	startDraggingHandleFromElement(element, mouseY) {
+	startDraggingHandleFromElement(element, mouseX, mouseY) {
 		if (this.selection == null || this.selection.draggingHandle != null) return;
-		var handle = new Map(this.selection.timelineHandles.map((v) => [v.element, v])).get(element)
-		if (handle != undefined) {
-			// Select timeline handle
-			this.selection.draggingHandle = {
-				isTimeline: true,
-				handle: handle
+		// check for timeline handle
+		{
+			let handle = new Map(this.selection.timelineHandles.map((v) => [v.element, v])).get(element)
+			if (handle != undefined) {
+				// Select timeline handle
+				this.selection.draggingHandle = {
+					isTimeline: true,
+					handle: handle
+				}
+				element.classList.add("active")
+				// Move handle
+				this.moveDraggingHandle(0, mouseY)
 			}
-			element.classList.add("active")
-			// Move handle
-			this.moveDraggingHandle(0, mouseY)
+		}
+		// check for viewport handle
+		{
+			let handle = new Map(this.selection.viewportHandles.map((v) => [v.element, v])).get(element)
+			if (handle != undefined) {
+				// Select viewport handle
+				this.selection.draggingHandle = {
+					isTimeline: false,
+					handle: handle
+				}
+				element.classList.add("active")
+				// Move handle
+				this.moveDraggingHandle(mouseX, mouseY)
+			}
 		}
 	}
 	/**
@@ -819,15 +930,23 @@ class VideoEditorApp {
 	moveDraggingHandle(mouseX, mouseY) {
 		if (this.selection == null || this.selection.draggingHandle == null) return;
 		if (this.selection.draggingHandle.isTimeline) {
-			var handle = this.selection.draggingHandle.handle
+			let handle = this.selection.draggingHandle.handle
 			// Move handle
-			var targetTimeExact = this.currentTime + ((mouseY - (window.innerHeight / 2)) / this.timelinePixelsPerSecond)
-			var stepSize = Utils.roundToSignificantDigitsBinary(12.5 / this.timelinePixelsPerSecond, 1)
-			var targetTimeRounded = Math.round(targetTimeExact / stepSize) * stepSize
+			let targetTimeExact = this.currentTime + ((mouseY - (window.innerHeight / 2)) / this.timelinePixelsPerSecond)
+			let stepSize = Utils.roundToSignificantDigitsBinary(12.5 / this.timelinePixelsPerSecond, 1)
+			let targetTimeRounded = Math.round(targetTimeExact / stepSize) * stepSize
 			handle.moveTo([targetTimeRounded])
+		} else {
+			let handle = this.selection.draggingHandle.handle
+			// Move handle
+			let rect = this.element_preview.getBoundingClientRect()
+			let xFromCorner = mouseX - rect.left
+			let yFromCorner = mouseY - rect.top
+			handle.moveTo([xFromCorner, yFromCorner])
+			handle.object.setCurrentPropertiesToCalculatedPropertiesAtTime(this.currentTime) // <-- this will update `handle.object`'s direct properties (which will cause `updateHandlePositions` to give the correct handle positions) since `handle.moveTo` only updates the object's `config`
 		}
 		this.updateAllTimelineElements(false)
-		this.updateHandles()
+		this.updateHandlePositions()
 	}
 	stopDraggingHandle() {
 		if (this.selection == null || this.selection.draggingHandle == null) return;

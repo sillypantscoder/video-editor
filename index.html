@@ -109,6 +109,11 @@ body {
 		background-size: 10px;
 		box-shadow: 0px 8px 20px 2px black;
 	}
+	& > .handle {
+		/* Viewport handle styling */
+		top: calc(50% + var(--y) - 0.75em);
+		left: calc(50% + var(--x) - 0.75em);
+	}
 }
 #tab-container {
 	height: 50%;
@@ -119,12 +124,16 @@ body {
 		<div id="timeline"
 			onscroll="app.onScroll()"
 			onwheel="if (event.ctrlKey) { event.preventDefault(); app.zoomTimeline(Math.pow(2, event.deltaY / -300)) }"
-			onmousedown="if (event.target.classList.contains('handle')) { app.startDraggingHandleFromElement(event.target, event.clientY); } else if (event.target.classList.contains('timeline-block')) { app.selectObjectFromTimelineBlock(event.target) } else if (app.selection != null) { app.setSelectedObject(null) } else { app.scrollTimelineByPixels(event.clientY - (window.innerHeight / 2)) }"
+			onmousedown="if (event.clientX > this.clientWidth) { /* clicked on scrollbar */ } else if (event.target.classList.contains('handle')) { app.startDraggingHandleFromElement(event.target, event.clientX, event.clientY); } else if (event.target.classList.contains('timeline-block')) { app.selectObjectFromTimelineBlock(event.target) } else if (Math.abs(event.clientY - (window.innerHeight / 2)) > 5) { app.scrollTimelineByPixels(event.clientY - (window.innerHeight / 2)) } else { app.setSelectedObject(null) }"
 			onmousemove="if (app.selection?.draggingHandle != null) { app.moveDraggingHandle(0, event.clientY); }"
 			onmouseup="if (app.selection?.draggingHandle != null) { app.stopDraggingHandle(); }"
 		></div>
 		<div id="main-panel">
-			<div id="preview-container"></div>
+			<div id="preview-container"
+				onmousedown="if (event.target.classList.contains('handle')) { app.startDraggingHandleFromElement(event.target, event.clientX, event.clientY); } else if (event.target == event.currentTarget && app.selection != null) { app.setSelectedObject(null) }"
+				onmousemove="if (app.selection?.draggingHandle != null) { app.moveDraggingHandle(event.clientX, event.clientY); }"
+				onmouseup="if (app.selection?.draggingHandle != null) { app.stopDraggingHandle(); }"
+			></div>
 			<div id="tab-container"></div>
 		</div>
 		<script src="index.js"></script>

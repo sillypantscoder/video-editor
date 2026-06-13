@@ -331,6 +331,39 @@ class KeyframeTimeHandle extends Handle {
 	}
 }
 /** @extends {Handle<[number, number]>} */
+class InvisibleObjectMoveHandle extends Handle {
+	/**
+	 * @param {VideoEditorApp} app
+	 * @param {VObject} object
+	 * @param {{ x: number, y: number }} initialPos
+	 * @param {(screenWidth: number, screenHeight: number, delta: { x: number, y: number }, keyframe_number: number) => void} move_by
+	 * @param {number} keyframe_number
+	 */
+	constructor(app, object, initialPos, move_by, keyframe_number) {
+		super(app, object, [initialPos.x, initialPos.y])
+		this.move_by_callback = move_by
+		this.keyframe_number = keyframe_number
+	}
+	updatePos() {}
+	/** @param {[number, number]} newPos */
+	moveTo(newPos) {
+		var difference = {
+			x: newPos[0] - this.pos[0],
+			y: newPos[1] - this.pos[1]
+		}
+		// update pos
+		super.moveTo(newPos)
+		// move by
+		this.move_by_callback(this.app.element_preview.width, this.app.element_preview.height, difference, this.keyframe_number)
+	}
+	updateFromObject() {
+		// var pos = this.get_pos(this.app.element_preview.width, this.app.element_preview.height)
+		// this.pos[0] = pos.x
+		// this.pos[1] = pos.y
+		// super.updateFromObject();
+	}
+}
+/** @extends {Handle<[number, number]>} */
 class ObjectMoveHandle extends Handle {
 	/**
 	 * @param {VideoEditorApp} app
@@ -465,6 +498,15 @@ class VObject {
 	 */
 	getViewportHandles(keyframe_number, app) {
 		throw new Error("Cannot get handles of a base object")
+	}
+	/**
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
+	 * @param {{ x: number, y: number }} delta
+	 * @param {number} keyframe_number
+	 */
+	moveByPixels(screenWidth, screenHeight, delta, keyframe_number) {
+		throw new Error("Cannot move a base object")
 	}
 }
 class VText extends VObject {
@@ -606,7 +648,7 @@ class VideoEditorApp {
 		var ctx = this.element_preview.getContext('2d')
 		if (ctx == null) throw new Error("missing canvas context")
 		this.preview_ctx = ctx
-		this.element_preview.addEventListener("click", this.canvasClicked.bind(this))
+		this.element_preview.addEventListener("mousedown", this.canvasClicked.bind(this))
 		this.blockScrollEventsFromUpdatingCurrentTime = 0
 		// video data
 		this.video_aspect_ratio = 16 / 9;
@@ -881,6 +923,7 @@ class VideoEditorApp {
 				// De-select current object or select this object
 				if (this.selection != null) {
 					if (this.selection.object != this.objects[i]) this.setSelectedObject(null);
+					else this.startDraggingInvisibleHandleForObject(this.selection.object, { x, y });
 				} else this.setSelectedObject(this.objects[i]);
 				return;
 			}
@@ -920,6 +963,23 @@ class VideoEditorApp {
 				element.classList.add("active")
 				// Move handle
 				this.moveDraggingHandle(mouseX, mouseY)
+			}
+		}
+	}
+	/**
+	 * @param {VObject} object
+	 * @param {{ x: number, y: number }} currentMousePos
+	 */
+	startDraggingInvisibleHandleForObject(object, currentMousePos) {
+		if (this.selection == null || this.selection.draggingHandle != null) return;
+		// Find keyframe number
+		let idx = this.selection.object.config.keyframes.findIndex((v) => v.time == this.currentTime);
+		var keyframeNumber = this.selection.object.config.startTime == this.currentTime ? -1 : (idx == -1 ? null : idx);
+		if (keyframeNumber != null) {
+			// Select viewport handle
+			this.selection.draggingHandle = {
+				isTimeline: false,
+				handle: new InvisibleObjectMoveHandle(this, object, currentMousePos, object.moveByPixels.bind(object), keyframeNumber)
 			}
 		}
 	}

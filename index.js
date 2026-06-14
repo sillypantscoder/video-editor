@@ -21,6 +21,20 @@ class Utils {
 		return newMap;
 	}
 	/**
+	 * @param {Map<string, ObjectProperty>[]} maps
+	 * @returns {Map<string, ObjectProperty>}
+	 */
+	static collapsePropertyMaps(maps) {
+		/** @type {Map<string, ObjectProperty>} */
+		var newMap = new Map();
+		for (var map of maps) {
+			for (var [key, value] of map) {
+				newMap.set(key, value.copy())
+			}
+		}
+		return newMap;
+	}
+	/**
 	 * @param {{ x: number, y: number }} point
 	 * @param {{ x: number, y: number, width: number, height: number }} rect
 	 */
@@ -160,6 +174,42 @@ class NumericProperty extends ObjectProperty {
 			var value = ((1-time) * this.value) + (time * endpoint.value)
 			return new NumericProperty(value)
 		} else throw new Error("Cannot interpolate NumericProperty with a differently-typed property")
+	}
+}
+class PositionProperty extends ObjectProperty {
+	/**
+	 * @param {number} x
+	 * @param {number} y
+	 */
+	constructor(x, y) {
+		super()
+		/** @type {number} */
+		this.x = x
+		/** @type {number} */
+		this.y = y
+	}
+	/** @returns {PositionProperty} */
+	copy() {
+		return new PositionProperty(this.x, this.y)
+	}
+	/** @param {ObjectProperty} property */
+	setFrom(property) {
+		if (property instanceof PositionProperty) {
+			this.x = property.x
+			this.y = property.y
+		} else throw new Error("Cannot set PositionProperty to a differently-typed property")
+	}
+	/**
+	 * @param {number} time
+	 * @param {ObjectProperty} endpoint
+	 * @returns {PositionProperty}
+	 */
+	interpolate(time, endpoint) {
+		if (endpoint instanceof PositionProperty) {
+			var x = ((1-time) * this.x) + (time * endpoint.x)
+			var y = ((1-time) * this.y) + (time * endpoint.y)
+			return new PositionProperty(x, y)
+		} else throw new Error("Cannot interpolate PositionProperty with a differently-typed property")
 	}
 }
 class ColorProperty extends ObjectProperty {
@@ -444,7 +494,7 @@ class VObject {
 			startTime,
 			initialProperties: Utils.copyPropertyMap(initialProperties),
 			keyframes: [
-				{ time: startTime + length, properties: Utils.copyPropertyMap(initialProperties) }
+				{ time: startTime + length, properties: new Map() }
 			]
 		}
 	}
@@ -456,6 +506,15 @@ class VObject {
 		if (time < this.config.startTime) return false;
 		var maxTime = this.config.keyframes[this.config.keyframes.length - 1].time
 		return time <= maxTime;
+	}
+	/**
+	 * @param {number} keyframe_number
+	 */
+	getPropertiesAtKeyframe(keyframe_number) {
+		return Utils.collapsePropertyMaps([
+			this.config.initialProperties,
+			...this.config.keyframes.slice(0, keyframe_number + 1).map((v) => v.properties)
+		])
 	}
 	/**
 	 * @param {number} time
@@ -471,8 +530,8 @@ class VObject {
 				var timeDifference = this.config.keyframes[i].time - previousTime
 				var fraction = (time - previousTime) / timeDifference
 				// Interpolate!
-				var previousData = [this.config.initialProperties, ...this.config.keyframes.map((v) => v.properties)][i]
-				var nextData = this.config.keyframes[i].properties
+				var previousData = this.getPropertiesAtKeyframe(i - 1)
+				var nextData = this.getPropertiesAtKeyframe(i)
 				/** @type {Map<string, ObjectProperty>} */
 				var interpolatedData = new Map();
 				for (var key of previousData.keys()) {
@@ -484,7 +543,7 @@ class VObject {
 				}
 				return interpolatedData;
 			}
-			if (time == this.config.keyframes[i].time) return Utils.copyPropertyMap(this.config.keyframes[i].properties);
+			if (time == this.config.keyframes[i].time) return this.getPropertiesAtKeyframe(i);
 		}
 		return null;
 	}
@@ -495,6 +554,25 @@ class VObject {
 		for (var key of properties.keys()) {
 			this.properties.get(key)?.setFrom(properties.get(key) ?? new ObjectProperty())
 		}
+	}
+	/**
+	 * @template {new (...args: any[]) => ObjectProperty} T
+	 * @param {string} property
+	 * @param {T} propertyType
+	 * @param {number} keyframe_number
+	 * @returns {InstanceType<T>}
+	 */
+	requireProperty(property, propertyType, keyframe_number) {
+		var configuredPosition = keyframe_number == -1 ? this.config.initialProperties.get(property) : this.config.keyframes[keyframe_number].properties.get(property)
+		if (configuredPosition == undefined) {
+			configuredPosition = this.getPropertiesAtKeyframe(keyframe_number).get(property);
+			if (configuredPosition == undefined) throw new Error(`Required property ${JSON.stringify(property)} is not present anywhere in this object`)
+			if (keyframe_number == -1) { this.config.initialProperties.set(property, configuredPosition); } else { this.config.keyframes[keyframe_number].properties.set(property, configuredPosition); }
+		}
+		// @ts-ignore
+		if (configuredPosition instanceof propertyType) return configuredPosition
+		// @ts-ignore
+		throw new Error(`Property ${JSON.stringify(property)} is of an incorrect type; expected ${propertyType.name} but got ${configuredPosition.constructor.name}`);
 	}
 	/**
 	 * @param {number} screenWidth
@@ -544,8 +622,7 @@ class VText extends VObject {
 	 */
 	constructor(startTime) {
 		// - pos/size
-		var centerX = new NumericProperty(0.5)
-		var centerY = new NumericProperty(0.5)
+		var centerPos = new PositionProperty(0.5, 0.5)
 		var width = new NumericProperty(0.15)
 		// - text
 		var text = new StringProperty("Text goes here asdf asdf asdf asdf asdf")
@@ -554,8 +631,7 @@ class VText extends VObject {
 		// create!
 		/** @type {[string, ObjectProperty][]} */
 		var properties = [
-			["centerX", centerX],
-			["centerY", centerY],
+			["centerPos", centerPos],
 			["width", width],
 			["text", text],
 			["color", color],
@@ -563,8 +639,7 @@ class VText extends VObject {
 		]
 		super(startTime, new Map(properties), 5)
 		// properties
-		this.centerX = centerX
-		this.centerY = centerY
+		this.centerPos = centerPos
 		this.width = width
 		this.text = text
 		this.color = color
@@ -624,8 +699,8 @@ class VText extends VObject {
 	 */
 	getPixelBoundingBox(screenWidth, screenHeight) {
 		var render = this.renders.get(this.width.value * screenWidth, this.text.value, this.color.asobj(), this.textSize.value);
-		var posX = (this.centerX.value * screenWidth) - (render.width / 2)
-		var posY = (this.centerY.value * screenHeight) - (render.height / 2)
+		var posX = (this.centerPos.x * screenWidth) - (render.width / 2)
+		var posY = (this.centerPos.y * screenHeight) - (render.height / 2)
 		return {
 			x: posX,
 			y: posY,
@@ -640,8 +715,8 @@ class VText extends VObject {
 	 */
 	render(screenWidth, screenHeight, canvas) {
 		var render = this.renders.get(this.width.value * screenWidth, this.text.value, this.color.asobj(), this.textSize.value);
-		var posX = (this.centerX.value * screenWidth) - (render.width / 2)
-		var posY = (this.centerY.value * screenHeight) - (render.height / 2)
+		var posX = (this.centerPos.x * screenWidth) - (render.width / 2)
+		var posY = (this.centerPos.y * screenHeight) - (render.height / 2)
 		canvas.drawImage(render, Math.round(posX), Math.round(posY))
 	}
 	/**
@@ -664,10 +739,10 @@ class VText extends VObject {
 	 * @param {number} keyframe_number
 	 */
 	moveByPixels(screenWidth, screenHeight, delta, keyframe_number) {
-		var configuredXPos = keyframe_number == -1 ? this.config.initialProperties.get("centerX") : this.config.keyframes[keyframe_number].properties.get("centerX")
-		if (configuredXPos instanceof NumericProperty) configuredXPos.value += delta.x / screenWidth
-		var configuredYPos = keyframe_number == -1 ? this.config.initialProperties.get("centerY") : this.config.keyframes[keyframe_number].properties.get("centerY")
-		if (configuredYPos instanceof NumericProperty) configuredYPos.value += delta.y / screenHeight
+		// Set centerPos
+		var configuredPosition = this.requireProperty("centerPos", PositionProperty, keyframe_number)
+		configuredPosition.x += delta.x / screenWidth;
+		configuredPosition.y += delta.y / screenHeight;
 	}
 	/**
 	 * @param {number} delta
@@ -675,10 +750,12 @@ class VText extends VObject {
 	 */
 	rescaleBy(delta, keyframe_number) {
 		if (delta <= 0 || this.textSize.value * delta < 1) return;
-		var configuredWidth = keyframe_number == -1 ? this.config.initialProperties.get("width") : this.config.keyframes[keyframe_number].properties.get("width")
-		if (configuredWidth instanceof NumericProperty) configuredWidth.value *= delta
-		var configuredTextSize = keyframe_number == -1 ? this.config.initialProperties.get("textSize") : this.config.keyframes[keyframe_number].properties.get("textSize")
-		if (configuredTextSize instanceof NumericProperty) configuredTextSize.value *= delta
+		// Set width
+		var configuredPosition = this.requireProperty("width", NumericProperty, keyframe_number)
+		configuredPosition.value *= delta;
+		// Set textSize
+		var configuredPosition = this.requireProperty("textSize", NumericProperty, keyframe_number)
+		configuredPosition.value *= delta;
 	}
 }
 
@@ -699,8 +776,8 @@ class VideoEditorApp {
 		/** @type {VObject[]} */
 		this.objects = [];
 		this.objects.push(new VText(1)); // TEST
-		this.objects[0].config.keyframes[0].properties.get("centerX")?.setFrom(new NumericProperty(0.9)) // TEST
-		this.objects[0].config.keyframes[0].properties.get("color")?.setFrom(new ColorProperty(255, 0, 0, 255)) // TEST
+		this.objects[0].config.keyframes[0].properties.set("centerPos", new PositionProperty(0.9, 0.6)) // TEST
+		this.objects[0].config.keyframes[0].properties.set("color", new ColorProperty(255, 0, 0, 255)) // TEST
 		/** @type {{ object: VObject, timelineHandles: Handle<[number]>[], viewportHandles: Handle<[number, number]>[], draggingHandle: { isTimeline: true, handle: Handle<[number]> } | { isTimeline: false, handle: Handle<[number, number]> } | null } | null} */
 		this.selection = null;
 		// timeline tracking

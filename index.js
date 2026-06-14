@@ -319,32 +319,29 @@ class Handle {
 	}
 }
 /** @extends {Handle<[number]>} */
-class StartTimeHandle extends Handle {
+class InvisibleTimeHandle extends Handle {
 	/**
 	 * @param {VideoEditorApp} app
 	 * @param {VObject} object
+	 * @param {number} initialPos
 	 */
-	constructor(app, object) {
-		super(app, object, [object.config.startTime])
+	constructor(app, object, initialPos) {
+		super(app, object, [initialPos])
+		this.timeOffset = initialPos - this.object.config.startTime
 	}
-	updatePos() {
-		this.element.setAttribute("style", `--y: ${this.pos[0]}; --x: 0;`)
-	}
+	updatePos() {}
 	/** @param {[number]} newPos */
 	moveTo(newPos) {
-		newPos[0] = Math.max(newPos[0], 0)
+		newPos[0] = Math.max(newPos[0], this.timeOffset)
 		// update pos
 		super.moveTo(newPos)
 		// set object start time
-		var delta = this.pos[0] - this.object.config.startTime
-		this.object.config.startTime = this.pos[0]
+		var delta = (this.pos[0] - this.timeOffset) - this.object.config.startTime
+		this.object.config.startTime += delta
 		// set keyframe times
 		this.object.config.keyframes.forEach((v) => v.time += delta)
 	}
-	updateFromObject() {
-		this.pos[0] = this.object.config.startTime
-		super.updateFromObject();
-	}
+	updateFromObject() {}
 }
 /** @extends {Handle<[number]>} */
 class KeyframeTimeHandle extends Handle {
@@ -354,7 +351,7 @@ class KeyframeTimeHandle extends Handle {
 	 * @param {number} keyframe_idx
 	 */
 	constructor(app, object, keyframe_idx) {
-		super(app, object, [object.config.keyframes[keyframe_idx].time])
+		super(app, object, [object.config.keyframes[keyframe_idx]?.time ?? object.config.startTime])
 		this.keyframe_idx = keyframe_idx;
 	}
 	updatePos() {
@@ -362,12 +359,16 @@ class KeyframeTimeHandle extends Handle {
 	}
 	/** @param {[number]} newPos */
 	moveTo(newPos) {
-		newPos[0] = Math.max(Math.min(newPos[0], this.object.config.keyframes[this.keyframe_idx+1]?.time ?? Infinity), this.object.config.keyframes[this.keyframe_idx-1]?.time ?? this.object.config.startTime)
-		if (newPos[0] == this.object.config.keyframes[this.keyframe_idx].time) return; // did not move
+		// validate position
+		var minTime = this.keyframe_idx == -1 ? 0 : (this.object.config.keyframes[this.keyframe_idx-1]?.time ?? this.object.config.startTime)
+		var maxTime = this.object.config.keyframes[this.keyframe_idx+1]?.time ?? Infinity
+		newPos[0] = Math.max(Math.min(newPos[0], maxTime), minTime)
+		if (newPos[0] == (this.keyframe_idx == -1 ? this.object.config.startTime : this.object.config.keyframes[this.keyframe_idx].time)) return; // did not move
 		// update pos
 		super.moveTo(newPos)
 		// set keyframe time
-		this.object.config.keyframes[this.keyframe_idx].time = this.pos[0]
+		if (this.keyframe_idx == -1) this.object.config.startTime = this.pos[0]
+		else this.object.config.keyframes[this.keyframe_idx].time = this.pos[0]
 		// update previews
 		var previewElement = this.app.timelineElements.get(this.object)
 		if (previewElement != undefined) {
@@ -376,7 +377,8 @@ class KeyframeTimeHandle extends Handle {
 		}
 	}
 	updateFromObject() {
-		this.pos[0] = this.object.config.keyframes[this.keyframe_idx].time
+		if (this.keyframe_idx == -1) this.pos[0] = this.object.config.startTime
+		else this.pos[0] = this.object.config.keyframes[this.keyframe_idx].time
 		super.updateFromObject();
 	}
 }
@@ -406,12 +408,7 @@ class InvisibleObjectMoveHandle extends Handle {
 		// move by
 		this.move_by_callback(this.app.element_preview.width, this.app.element_preview.height, difference, this.keyframe_number)
 	}
-	updateFromObject() {
-		// var pos = this.get_pos(this.app.element_preview.width, this.app.element_preview.height)
-		// this.pos[0] = pos.x
-		// this.pos[1] = pos.y
-		// super.updateFromObject();
-	}
+	updateFromObject() {}
 }
 /** @extends {Handle<[number, number]>} */
 class ObjectRescaleHandle extends Handle {
@@ -949,18 +946,20 @@ class VideoEditorApp {
 			await new Promise((resolve) => requestAnimationFrame(resolve))
 		}
 	}
+	/**
+	 * @param {number} mouseY
+	 */
+	getRoundedTimelinePosition(mouseY) {
+		let targetTimeExact = this.currentTime + ((mouseY - (window.innerHeight / 2)) / this.timelinePixelsPerSecond)
+		let stepSize = Utils.roundToSignificantDigitsBinary(12.5 / this.timelinePixelsPerSecond, 1)
+		let targetTimeRounded = Math.round(targetTimeExact / stepSize) * stepSize
+		return targetTimeRounded
+	}
 	/** @param {number} targetTime */
 	scrollTimelineTo(targetTime) {
 		this.blockScrollEventsFromUpdatingCurrentTime += 1
 		this.element_timeline.scrollTop = targetTime * this.timelinePixelsPerSecond;
 		this.currentTime = Math.max(targetTime, 0)
-	}
-	/** @param {number} pixels */
-	scrollTimelineByPixels(pixels) {
-		var targetTimeExact = this.currentTime + (pixels / this.timelinePixelsPerSecond);
-		var stepSize = Utils.roundToSignificantDigitsBinary(12.5 / this.timelinePixelsPerSecond, 1)
-		var targetTimeRounded = Math.round(targetTimeExact / stepSize) * stepSize
-		this.scrollTimelineTo(targetTimeRounded)
 	}
 	/** @param {VObject | null} object */
 	setSelectedObject(object) {
@@ -983,7 +982,7 @@ class VideoEditorApp {
 			}
 			// Start time handle
 			{
-				let start_time_handle = new StartTimeHandle(this, object);
+				let start_time_handle = new KeyframeTimeHandle(this, object, -1);
 				this.selection.timelineHandles.push(start_time_handle);
 				this.element_timeline.appendChild(start_time_handle.element);
 			}
@@ -1043,7 +1042,7 @@ class VideoEditorApp {
 				// De-select current object or select this object
 				if (this.selection != null) {
 					if (this.selection.object != this.objects[i]) this.setSelectedObject(null);
-					else this.startDraggingInvisibleHandleForObject(this.selection.object, { x, y });
+					else this.startDraggingInvisibleViewportHandleForObject(this.selection.object, { x, y });
 				} else this.setSelectedObject(this.objects[i]);
 				return;
 			}
@@ -1088,9 +1087,22 @@ class VideoEditorApp {
 	}
 	/**
 	 * @param {VObject} object
+	 * @param {number} mouseY
+	 */
+	startDraggingInvisibleTimelineHandleForObject(object, mouseY) {
+		if (this.selection == null || this.selection.draggingHandle != null) return;
+		// Select timeline handle
+		let targetTime = this.getRoundedTimelinePosition(mouseY);
+		this.selection.draggingHandle = {
+			isTimeline: true,
+			handle: new InvisibleTimeHandle(this, object, targetTime)
+		}
+	}
+	/**
+	 * @param {VObject} object
 	 * @param {{ x: number, y: number }} currentMousePos
 	 */
-	startDraggingInvisibleHandleForObject(object, currentMousePos) {
+	startDraggingInvisibleViewportHandleForObject(object, currentMousePos) {
 		if (this.selection == null || this.selection.draggingHandle != null) return;
 		// Find keyframe number
 		let idx = this.selection.object.config.keyframes.findIndex((v) => v.time == this.currentTime);
@@ -1112,10 +1124,9 @@ class VideoEditorApp {
 		if (this.selection.draggingHandle.isTimeline) {
 			let handle = this.selection.draggingHandle.handle
 			// Move handle
-			let targetTimeExact = this.currentTime + ((mouseY - (window.innerHeight / 2)) / this.timelinePixelsPerSecond)
-			let stepSize = Utils.roundToSignificantDigitsBinary(12.5 / this.timelinePixelsPerSecond, 1)
-			let targetTimeRounded = Math.round(targetTimeExact / stepSize) * stepSize
-			handle.moveTo([targetTimeRounded])
+			let targetTime = this.getRoundedTimelinePosition(mouseY)
+			handle.moveTo([targetTime])
+			this.updateViewportHandles()
 		} else {
 			let handle = this.selection.draggingHandle.handle
 			// Move handle

@@ -177,13 +177,12 @@ button:has( > input[type=checkbox]:first-child) {
 				width: calc(100% - 2em);
 				height: calc(100% - 4.5em);
 				box-sizing: border-box;
+				margin: 1em;
+				overflow-y: auto;
 			}
 		}
 		&:active {
 			z-index: 1;
-		}
-		& + section {
-			margin: 1em;
 		}
 	}
 }

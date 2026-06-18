@@ -152,6 +152,11 @@ h3 {
 		height: calc(100% - 2.25em);
 		border-right: 1px solid gray;
 	}
+	& button {
+		font-size: 0.75em;
+		margin-left: 1em;
+		margin-right: 1em;
+	}
 }
 input[type="number"], input[type="text"] {
 	font-size: 1em;
@@ -164,6 +169,9 @@ input[type="number"], input[type="text"] {
 	outline: 1px solid white;
 	&:focus {
 		outline-width: 0.25em;
+	}
+	&[type="text"] {
+		width: 40em;
 	}
 }
 		</style>

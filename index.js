@@ -174,7 +174,7 @@ class ObjectProperty {
 	}
 	/**
 	 * @param {() => void} update
-	 * @returns {HTMLElement[] | OptionsTreeNode[]}
+	 * @returns {{ contents: HTMLElement[], children: OptionsTreeNode[]}}
 	 */
 	makeElements(update) {
 		throw new Error("Cannot visualize a base property")
@@ -210,13 +210,14 @@ class NumericProperty extends ObjectProperty {
 	}
 	/**
 	 * @param {() => void} update
-	 * @returns {HTMLElement[] | OptionsTreeNode[]}
+	 * @returns {{ contents: HTMLElement[], children: OptionsTreeNode[]}}
 	 */
 	makeElements(update) {
 		var e = Options.number(null, () => this.value, (v) => { this.value = v; update(); })
 		e.setAttribute("min", "0")
+		e.setAttribute("step", "0.005")
 		e.setAttribute("max", "1")
-		return [e]
+		return { contents: [e], children: [] }
 	}
 }
 class PositionProperty extends ObjectProperty {
@@ -256,18 +257,23 @@ class PositionProperty extends ObjectProperty {
 	}
 	/**
 	 * @param {() => void} update
-	 * @returns {HTMLElement[] | OptionsTreeNode[]}
+	 * @returns {{ contents: HTMLElement[], children: OptionsTreeNode[]}}
 	 */
 	makeElements(update) {
 		var x = Options.number(null, () => this.x, (v) => { this.x = v; update(); }); x.setAttribute("min", "0"); x.setAttribute("step", "0.01"); x.setAttribute("max", "1");
 		var y = Options.number(null, () => this.y, (v) => { this.y = v; update(); }); y.setAttribute("min", "0"); y.setAttribute("step", "0.01"); y.setAttribute("max", "1");
-		return [{
-			text: "X",
-			contents: [x]
-		}, {
-			text: "Y",
-			contents: [y]
-		}]
+		return { contents: [], children: [
+			{
+				text: "X:",
+				contents: [x],
+				children: []
+			},
+			{
+				text: "Y:",
+				contents: [y],
+				children: []
+			}
+		] }
 	}
 }
 class ColorProperty extends ObjectProperty {
@@ -321,26 +327,32 @@ class ColorProperty extends ObjectProperty {
 	}
 	/**
 	 * @param {() => void} update
-	 * @returns {HTMLElement[] | OptionsTreeNode[]}
+	 * @returns {{ contents: HTMLElement[], children: OptionsTreeNode[]}}
 	 */
 	makeElements(update) {
 		var r = Options.number(null, () => this.r, (v) => { this.r = v; update(); }); r.setAttribute("min", "0"); r.setAttribute("step", "1"); r.setAttribute("max", "255");
 		var g = Options.number(null, () => this.g, (v) => { this.g = v; update(); }); g.setAttribute("min", "0"); g.setAttribute("step", "1"); g.setAttribute("max", "255");
 		var b = Options.number(null, () => this.b, (v) => { this.b = v; update(); }); b.setAttribute("min", "0"); b.setAttribute("step", "1"); b.setAttribute("max", "255");
 		var a = Options.number(null, () => this.a, (v) => { this.a = v; update(); }); a.setAttribute("min", "0"); a.setAttribute("step", "1"); a.setAttribute("max", "255");
-		return [{
-			text: "R",
-			contents: [r]
-		}, {
-			text: "G",
-			contents: [g]
-		}, {
-			text: "B",
-			contents: [b]
-		}, {
-			text: "A",
-			contents: [a]
-		}]
+		return { contents: [], children: [
+			{
+				text: "R",
+				contents: [r],
+				children: []
+			}, {
+				text: "G",
+				contents: [g],
+				children: []
+			}, {
+				text: "B",
+				contents: [b],
+				children: []
+			}, {
+				text: "A",
+				contents: [a],
+				children: []
+			}
+		]}
 	}
 }
 class StringProperty extends ObjectProperty {
@@ -373,11 +385,11 @@ class StringProperty extends ObjectProperty {
 	}
 	/**
 	 * @param {() => void} update
-	 * @returns {HTMLElement[] | OptionsTreeNode[]}
+	 * @returns {{ contents: HTMLElement[], children: OptionsTreeNode[]}}
 	 */
 	makeElements(update) {
 		var e = Options.string(null, () => this.value, (v) => { this.value = v; update(); })
-		return [e]
+		return { contents: [e], children: [] }
 	}
 }
 
@@ -459,11 +471,7 @@ class KeyframeTimeHandle extends Handle {
 		if (this.keyframe_idx == -1) this.object.config.startTime = this.pos[0]
 		else this.object.config.keyframes[this.keyframe_idx].time = this.pos[0]
 		// update previews
-		var previewElement = this.app.timelineElements.get(this.object)
-		if (previewElement != undefined) {
-			[...previewElement.children].forEach((v) => v.remove())
-			this.app.addPreviewToTimelineElement(this.object, previewElement)
-		}
+		this.app.refreshTimelinePreviews(this.object)
 	}
 	updateFromObject() {
 		if (this.keyframe_idx == -1) this.pos[0] = this.object.config.startTime
@@ -688,48 +696,81 @@ class Options {
 		return c
 	}
 	/**
-	 * @typedef {{ text: string, contents: HTMLElement[] | OptionsTreeNode[] }} OptionsTreeNode
+	 * @typedef {{ text: string, contents: HTMLElement[], children: OptionsTreeNode[] }} OptionsTreeNode
 	 * @param {OptionsTreeNode} rootNode
 	 */
 	static tree(rootNode) {
 		var e = document.createElement("div")
 		e.classList.add("tree-node")
 		e.appendChild(document.createTextNode(rootNode.text))
-		if (rootNode.contents.length == 0) return e;
-		if (rootNode.contents[0] instanceof HTMLElement) {
-			for (let i = 0; i < rootNode.contents.length; i++) {
-				/** @type {HTMLElement} */
-				// @ts-ignore
-				let f = rootNode.contents[i]; // are you serious TS? can you really not see that we checked if the element is of type HTMLElement?
-				e.appendChild(f);
-			}
-		} else {
-			for (let i = 0; i < rootNode.contents.length; i++) {
-				/** @type {OptionsTreeNode} */
-				// @ts-ignore
-				let f = rootNode.contents[i]; // oh come on
-				let subNode = Options.tree(f)
-				e.appendChild(subNode);
-			}
+		for (let i = 0; i < rootNode.contents.length; i++) {
+			let c = rootNode.contents[i];
+			e.appendChild(c);
+		}
+		for (let i = 0; i < rootNode.children.length; i++) {
+			let c = rootNode.children[i];
+			let subNode = Options.tree(c)
+			e.appendChild(subNode);
 		}
 		return e
+	}
+	/**
+	 * @param {Map<string, ObjectProperty>} properties
+	 * @param {string} key
+	 * @param {() => void} update
+	 */
+	static _propertyMap_delete_button(properties, key, update) {
+		var button = document.createElement("button")
+		button.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M 3.8 15.5 Q 3.1 15.5 2.7 15 T 2.2 13.8 V 3 H 1.3 V 1.3 H 5.5 V 0.5 H 10.5 V 1.3 H 14.7 V 3 H 13.8 V 13.8 Q 13.8 14.5 13.3 15 T 12.2 15.5 H 3.8 Z M 12.2 3 H 3.8 V 13.8 H 12.2 V 3 Z M 5.5 12.2 H 7.2 V 4.7 H 5.5 V 12.2 Z M 8.8 12.2 H 10.5 V 4.7 H 8.8 V 12.2 Z M 3.8 3 V 13.8 V 3 Z" fill="currentcolor" /></svg>`
+		button.addEventListener("click", () => {
+			properties.delete(key)
+			update()
+		})
+		return button
+	}
+	/**
+	 * @param {Map<string, ObjectProperty>} properties
+	 * @param {string} key
+	 * @param {Map<string, ObjectProperty>} creationDefaultMap
+	 * @param {() => void} update
+	 */
+	static _propertyMap_add_button(properties, key, creationDefaultMap, update) {
+		var _newValue = creationDefaultMap.get(key);
+		if (_newValue == undefined) throw new Error("missing property creation default value")
+		var newValue = _newValue
+		// make button
+		var button = document.createElement("button")
+		button.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M 2.17 13.83 H 3.35 L 11.5 5.69 L 10.31 4.5 L 2.17 12.65 V 13.83 Z M 0.5 15.5 V 11.96 L 11.5 0.98 Q 11.75 0.75 12.05 0.62 T 12.69 0.5 Q 13.02 0.5 13.33 0.62 T 13.88 1 L 15.02 2.17 Q 15.27 2.4 15.39 2.71 T 15.5 3.33 Q 15.5 3.67 15.39 3.97 T 15.02 4.52 L 4.04 15.5 H 0.5 Z" fill="currentcolor" /></svg>`
+		button.addEventListener("click", () => {
+			properties.set(key, newValue.copy())
+			update()
+		})
+		return button
 	}
 	/**
 	 * @param {() => void} update
 	 * @param {string[]} allKeys
 	 * @param {Map<string, ObjectProperty>} properties
+	 * @param {boolean} deletionAllowed
+	 * @param {Map<string, ObjectProperty> | null} creationDefaultMap
 	 * @returns {OptionsTreeNode[]}
 	 */
-	static propertyMap(update, allKeys, properties) {
+	static propertyMap(update, allKeys, properties, deletionAllowed, creationDefaultMap) {
 		return allKeys.map((v) => {
 			var data = properties.get(v)
 			if (data == null) return {
 				text: v,
-				contents: []
+				contents: creationDefaultMap == null ? [] : [Options._propertyMap_add_button(properties, v, creationDefaultMap, update)],
+				children: []
 			}
-			else return {
+			var elements = data.makeElements(update)
+			return {
 				text: v,
-				contents: data.makeElements(update)
+				contents: [
+					...(deletionAllowed ? [Options._propertyMap_delete_button(properties, v, update)] : []),
+					...elements.contents
+				],
+				children: elements.children
 			}
 		});
 	}
@@ -771,18 +812,23 @@ class OptionsWindowTab {
 		this.section.remove()
 	}
 }
-class ObjectPropertiesEditorTab extends OptionsWindowTab {
+class ObjectCustomEditorTab extends OptionsWindowTab {
 	/**
 	 * @param {VideoEditorApp} app
 	 * @param {VObject} object
 	 */
 	constructor(app, object) {
-		super("Object Properties", ObjectPropertiesEditorTab.getContents(object, app.currentTime, (t) => app.setCurrentTime(t), () => app.updateViewportHandles()))
+		super("Object Options", [])
 		this.app = app
 		this.object = object
+		this.refresh()
 	}
 	refresh() {
-		this.changeContents(ObjectPropertiesEditorTab.getContents(this.object, this.app.currentTime, (t) => this.app.setCurrentTime(t), () => this.app.updateViewportHandles()))
+		this.changeContents(ObjectCustomEditorTab.getContents(this.object, this.app.currentTime, (t) => this.app.setCurrentTime(t), () => {
+			this.app.refreshTimelinePreviews(this.object)
+			this.app.updateViewportHandles()
+			this.app.refreshSelectionTabs()
+		}))
 	}
 	/**
 	 * @param {VObject} object
@@ -798,21 +844,23 @@ class ObjectPropertiesEditorTab extends OptionsWindowTab {
 			return [
 				Options.h("Not at a keyframe"),
 				Options.buttons([
-					{ text: "Previous keyframe", onclick: ObjectPropertiesEditorTab.previousKeyframe(object, time, setTime) },
-					{ text: "Next keyframe", onclick: ObjectPropertiesEditorTab.nextKeyframe(object, time, setTime) }
+					{ text: "Previous keyframe", onclick: ObjectCustomEditorTab.previousKeyframe(object, time, setTime) },
+					{ text: "Next keyframe", onclick: ObjectCustomEditorTab.nextKeyframe(object, time, setTime) }
 				]),
-				Options.p("Switch the timeline to one of this object's keyframes to edit its settings!")
+				Options.p("Move the timeline to one of this object's keyframes (or click one of the buttons above) to edit its settings!")
 			]
 		} else {
+			var defaults = object.getPropertiesAtKeyframe(keyframeNumber)
 			return [
 				Options.h(`Keyframe ${keyframeNumber+2}`),
 				Options.buttons([
-					{ text: "Previous keyframe", onclick: ObjectPropertiesEditorTab.previousKeyframe(object, time, setTime) },
-					{ text: "Next keyframe", onclick: ObjectPropertiesEditorTab.nextKeyframe(object, time, setTime) }
+					{ text: "Previous keyframe", onclick: ObjectCustomEditorTab.previousKeyframe(object, time, setTime) },
+					{ text: "Next keyframe", onclick: ObjectCustomEditorTab.nextKeyframe(object, time, setTime) }
 				]),
 				Options.tree({
-					text: `Keyframe ${keyframeNumber+2}`,
-					contents: Options.propertyMap(onObjectUpdated, [...object.getPropertiesAtKeyframe(keyframeNumber).keys()], object.config.keyframes[keyframeNumber]?.properties ?? object.config.initialProperties)
+					text: `Properties at keyframe ${keyframeNumber+2}`,
+					contents: [],
+					children: Options.propertyMap(onObjectUpdated, [...defaults.keys()], object.config.keyframes[keyframeNumber]?.properties ?? object.config.initialProperties, keyframeNumber != -1, defaults)
 				})
 			]
 		}
@@ -846,6 +894,43 @@ class ObjectPropertiesEditorTab extends OptionsWindowTab {
 			if (time < t) return setTime.bind(null, object.config.keyframes[i].time)
 		}
 		return null;
+	}
+}
+class ObjectPropertiesEditorTab extends OptionsWindowTab {
+	/**
+	 * @param {VideoEditorApp} app
+	 * @param {VObject} object
+	 */
+	constructor(app, object) {
+		super("Object Properties", [])
+		this.app = app
+		this.object = object
+		this.refresh()
+	}
+	refresh() {
+		this.changeContents(ObjectPropertiesEditorTab.getContents(this.object, () => {
+			this.app.refreshTimelinePreviews(this.object)
+			this.app.updateViewportHandles()
+			this.app.refreshSelectionTabs()
+		}))
+	}
+	/**
+	 * @param {VObject} object
+	 * @param {() => void} onObjectUpdated
+	 */
+	static getContents(object, onObjectUpdated) {
+		var treeItems = [object.config.initialProperties, ...object.config.keyframes.map((v) => v.properties)].flatMap((v, i) => ({
+			text: `Keyframe ${i+1}`,
+			contents: [],
+			children: Options.propertyMap(onObjectUpdated, [...object.getPropertiesAtKeyframe(i - 1).keys()], v, i != 0, object.getPropertiesAtKeyframe(i - 1))
+		}))
+		return [
+				Options.tree({
+				text: "All Object Properties",
+				contents: [],
+				children: treeItems
+			})
+		]
 	}
 }
 
@@ -1118,13 +1203,13 @@ class VText extends VObject {
 	 * @param {number} keyframe_number
 	 */
 	rescaleBy(delta, keyframe_number) {
-		if (delta <= 0 || this.textSize.value * delta < 1) return;
+		if (delta <= 0 || this.textSize.value * delta < 0.001) return;
 		// Set Width
-		var configuredPosition = this.requireProperty("Width", NumericProperty, keyframe_number)
-		configuredPosition.value *= delta;
+		var configuredWidth = this.requireProperty("Width", NumericProperty, keyframe_number)
+		configuredWidth.value *= delta;
 		// Set Text Size
-		var configuredPosition = this.requireProperty("Text Size", NumericProperty, keyframe_number)
-		configuredPosition.value *= delta;
+		var configuredTextSize = this.requireProperty("Text Size", NumericProperty, keyframe_number)
+		configuredTextSize.value *= delta;
 	}
 }
 
@@ -1147,7 +1232,7 @@ class VideoEditorApp {
 		this.objects.push(new VText(1)); // TEST
 		this.objects[0].config.keyframes[0].properties.set("Center Position", new PositionProperty(0.9, 0.6)) // TEST
 		this.objects[0].config.keyframes[0].properties.set("Text Color", new ColorProperty(255, 0, 0, 255)) // TEST
-		/** @type {{ object: VObject, timelineHandles: Handle<[number]>[], viewportHandles: Handle<[number, number]>[], draggingHandle: { isTimeline: true, handle: Handle<[number]> } | { isTimeline: false, handle: Handle<[number, number]> } | null, objectPropertiesTab: ObjectPropertiesEditorTab } | null} */
+		/** @type {{ object: VObject, timelineHandles: Handle<[number]>[], viewportHandles: Handle<[number, number]>[], draggingHandle: { isTimeline: true, handle: Handle<[number]> } | { isTimeline: false, handle: Handle<[number, number]> } | null, objectEditorTab: ObjectCustomEditorTab, objectPropertiesTab: ObjectPropertiesEditorTab } | null} */
 		this.selection = null;
 		// main tab
 		this.mainOptionsTab = new OptionsWindowTab("Scene", [
@@ -1274,6 +1359,15 @@ class VideoEditorApp {
 			}); });
 		});
 	}
+	/**
+	 * @param {VObject} object
+	 */
+	refreshTimelinePreviews(object) {
+		var timelineElement = this.timelineElements.get(object);
+		if (timelineElement == null) return;
+		[...timelineElement.children].forEach((v) => v.remove());
+		this.addPreviewToTimelineElement(object, timelineElement)
+	}
 	updateCanvas() {
 		this.preview_ctx.clearRect(0, 0, this.element_preview.width, this.element_preview.height)
 		// draw objects
@@ -1313,8 +1407,8 @@ class VideoEditorApp {
 		if (n.textContent != timelineNumberText) n.textContent = timelineNumberText
 		// Update selection handles
 		this.updateViewportHandles();
-		// Update object properties tab
-		this.selection?.objectPropertiesTab.refresh()
+		// Update selection-related tabs
+		this.refreshSelectionTabs()
 	}
 	onFrame() {
 		// redraw canvas
@@ -1346,6 +1440,7 @@ class VideoEditorApp {
 		// Deselect previous object
 		if (this.selection != null) {
 			this.timelineElements.get(this.selection.object)?.classList.remove("selected")
+			this.selection.objectEditorTab.hide()
 			this.selection.objectPropertiesTab.hide()
 			this.mainOptionsTab.focus()
 		}
@@ -1363,10 +1458,12 @@ class VideoEditorApp {
 				timelineHandles: [],
 				viewportHandles: [],
 				draggingHandle: null,
+				objectEditorTab: new ObjectCustomEditorTab(this, object),
 				objectPropertiesTab: new ObjectPropertiesEditorTab(this, object)
 			}
+			this.selection.objectEditorTab.show()
+			this.selection.objectEditorTab.focus()
 			this.selection.objectPropertiesTab.show()
-			this.selection.objectPropertiesTab.focus()
 			// Start time handle
 			{
 				let start_time_handle = new KeyframeTimeHandle(this, object, -1);
@@ -1418,6 +1515,11 @@ class VideoEditorApp {
 			this.selection.viewportHandles = [...this.selection.object.getViewportHandles(keyframeNumber, this)]
 			this.selection.viewportHandles.forEach((v) => this.element_preview.parentNode?.appendChild(v.element))
 		}
+	}
+	refreshSelectionTabs() {
+		if (this.selection == null) return;
+		this.selection.objectEditorTab.refresh();
+		this.selection.objectPropertiesTab.refresh();
 	}
 	/** @param {MouseEvent} event */
 	canvasClicked(event) {
@@ -1525,6 +1627,7 @@ class VideoEditorApp {
 		}
 		this.updateAllTimelineElements(false)
 		this.updateHandlePositions()
+		this.refreshSelectionTabs()
 	}
 	stopDraggingHandle() {
 		if (this.selection == null || this.selection.draggingHandle == null) return;

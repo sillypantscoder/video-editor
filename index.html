@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html>
 	<head>
+		<link rel="stylesheet" href="custom_buttons.css">
 		<style>
 html {
 	height: 100%;
@@ -119,13 +120,59 @@ body {
 #tab-container {
 	height: 50%;
 }
+h3 {
+	margin: 0.25em 0;
+}
+.tree-node {
+	position: relative;
+	margin-top: 0.25em;
+	& .tree-node {
+		margin-left: 1.5em;
+		&::before {
+			content: "";
+			display: block;
+			position: absolute;
+			top: 0.5em;
+			left: -1.25em;
+			width: 1em;
+			height: 0;
+			border-bottom: 1px solid gray;
+		}
+		&:has( > :is(button, input))::before {
+			top: 0.875em;
+		}
+	}
+	&:has( > .tree-node)::after {
+		content: "";
+		display: block;
+		position: absolute;
+		top: 1em;
+		left: 0.25em;
+		width: 0;
+		height: calc(100% - 2.25em);
+		border-right: 1px solid gray;
+	}
+}
+input[type="number"], input[type="text"] {
+	font-size: 1em;
+	margin: 0.25em;
+	border: none;
+	border-radius: 0.125em;
+	padding: 0.25em;
+	background: black;
+	color: white;
+	outline: 1px solid white;
+	&:focus {
+		outline-width: 0.25em;
+	}
+}
 		</style>
 	</head>
 	<body>
 		<div id="timeline"
 			onscroll="app.onScroll()"
 			onwheel="if (event.ctrlKey) { event.preventDefault(); app.zoomTimeline(Math.pow(2, event.deltaY / -300)) }"
-			onmousedown="if (event.clientX > this.clientWidth) { /* clicked on scrollbar */ } else if (event.target.classList.contains('handle')) { app.startDraggingHandleFromElement(event.target, event.clientX, event.clientY); } else if (event.target.classList.contains('timeline-block')) { if (app.selection != null && event.target == app.timelineElements.get(app.selection.object)) { app.startDraggingInvisibleTimelineHandleForObject(app.selection.object, event.clientY) } else { app.selectObjectFromTimelineBlock(event.target) } } else { app.scrollTimelineTo(app.getRoundedTimelinePosition(event.clientY)) }"
+			onmousedown="if (event.clientX > this.clientWidth) { /* clicked on scrollbar */ } else if (event.target.classList.contains('handle')) { app.startDraggingHandleFromElement(event.target, event.clientX, event.clientY); } else if (event.target.classList.contains('timeline-block')) { if (app.selection != null && event.target == app.timelineElements.get(app.selection.object)) { app.startDraggingInvisibleTimelineHandleForObject(app.selection.object, event.clientY) } else { app.selectObjectFromTimelineBlock(event.target) } } else { app.setCurrentTime(app.getRoundedTimelinePosition(event.clientY)) }"
 			onmousemove="if (app.selection?.draggingHandle != null) { app.moveDraggingHandle(0, event.clientY); }"
 			onmouseup="if (app.selection?.draggingHandle != null) { app.stopDraggingHandle(); }"
 		></div>

@@ -1,0 +1,189 @@
+:root {
+	--TRUE: initial;
+	--FALSE: ;
+}
+button {
+	/* color config */
+	--background-color: #000;
+	--accent-color: #FFF;
+	--normal-background-color: var(--background-color);
+	--highlight-background-color: var(--normal-text-color);
+	--clicked-background-color: var(--background-color);
+	--normal-text-color: var(--accent-color);
+	--highlight-text-color: var(--background-color);
+	--clicked-text-color: var(--accent-color);
+	--clicked-outline-color: var(--clicked-text-color);
+	&.accent-button {
+		--accent-color: #28F;
+		--normal-background-color: var(--accent-color);
+		--normal-text-color: var(--background-color);
+		--highlight-background-color: color-mix(in srgb, var(--accent-color) 70%, white 30%);
+	}
+	/* settings */
+	--is-clicked: var(--FALSE);
+	/* actual color computation */
+	--non-clicked-background-color: var(--is-clicked) var(--normal-background-color);
+	--non-clicked-text-color: var(--is-clicked) var(--normal-text-color);
+	&:hover {
+		--non-clicked-background-color: var(--is-clicked) var(--highlight-background-color);
+		--non-clicked-text-color: var(--is-clicked) var(--highlight-text-color);
+	}
+	--final-background-color: var(--non-clicked-background-color, var(--clicked-background-color));
+	--final-text-color: var(--non-clicked-text-color, var(--clicked-text-color));
+	/* positioning */
+	position: relative;
+	margin: 0.5em;
+	border: none;
+	padding: 0.5em;
+	/* getting rid of browser button styles */
+	background: none;
+	font-size: 1em;
+	font-family: inherit;
+	/* sizing */
+	display: inline-flex;
+	vertical-align: middle;
+	line-height: 1em;
+	/* crazy button stuff */
+	color: var(--final-text-color);
+	& > svg {
+		width: 1em;
+		height: 1em;
+	}
+	&::before {
+		content: "";
+		display: block;
+		position: absolute;
+		top: 0;
+		left: 0;
+		width: 100%;
+		height: 100%;
+		border-radius: 1em;
+		z-index: -1;
+		transition: top 0.25s ease-out, left 0.25s ease-out, width 0.25s ease-out, height 0.25s ease-out, border-radius 0.25s ease-out;
+		background: var(--final-background-color);
+	}
+	&:not(.accent-button):not(:hover):not(:active)::before {
+		outline: 2px solid color-mix(in srgb, var(--normal-text-color) 20%, var(--normal-background-color) 80%);
+	}
+	&:active {
+		--is-clicked: var(--TRUE);
+	}
+}
+@container style(--is-clicked: var(--TRUE)) {
+	button {
+		&::before {
+			/* positioning and stuff, since that's annoying to do with the TRUE/FALSE trick */
+			top: -0.25em;
+			left: -0.25em;
+			width: calc(100% + 0.5em);
+			height: calc(100% + 0.5em);
+			border-radius: 1.5em;
+			outline: 0.25em solid var(--clicked-outline-color);
+		}
+	}
+}
+button:has( > input[type=checkbox]:first-child) {
+	/* color config */
+		/* normal colors when unchecked */
+		--normal-background-color: var(--background-color);
+		--normal-text-color: var(--accent-color);
+		/* swap colors when clicked */
+		--clicked-background-color: var(--accent-color);
+		--clicked-text-color: var(--background-color);
+		--clicked-outline-color: color-mix(in srgb, var(--accent-color) 50%, var(--background-color) 50%);
+		/* swap colors when checked */
+		&:has( > input[type=checkbox]:first-child:checked) {
+			--normal-background-color: var(--accent-color);
+			--normal-text-color: var(--background-color);
+			/* change colors back to normal when clicked */
+			--clicked-background-color: var(--background-color);
+			--clicked-text-color: var(--accent-color);
+			--clicked-outline-color: var(--accent-color);
+		}
+		/* highlight colors do not change */
+		--highlight-background-color: var(--normal-background-color);
+		--highlight-text-color: var(--normal-text-color);
+	/* misc outline styles */
+	&:is(.accent-button, :hover):not(:active):has( > input[type=checkbox]:first-child:not(:checked)) {
+		&::before {
+			outline: 2px solid color-mix(in srgb, var(--normal-text-color) 20%, var(--normal-background-color) 80%);
+		}
+		&:hover::before {
+			outline-color: color-mix(in srgb, var(--normal-text-color) 50%, var(--normal-background-color) 50%);
+		}
+	}
+	&:not(.accent-button):not(:hover):has( > input[type=checkbox]:first-child:checked)::before {
+		outline: none;
+	}
+	/* checkbox styles */
+	& > input[type=checkbox]:first-child {
+		position: absolute;
+		top: 0;
+		left: 0;
+		width: 100%;
+		height: 100%;
+		margin: 0;
+		opacity: 0;
+	}
+}
+#tab-container {
+	position: relative;
+	margin: 1em;
+	&::before {
+		content: "";
+		position: absolute;
+		top: calc(2.5em - 2px);
+		left: 0;
+		width: 100%;
+		height: calc(100% + 3px - 2.5em);
+		box-sizing: border-box;
+		border: 2px solid white;
+	}
+	& > button:has( > input[type=radio]:first-child) {
+		&::before {
+			border-radius: 0;
+		}
+		& > input[type=radio]:first-child {
+			position: absolute;
+			top: 0;
+			left: 0;
+			width: 100%;
+			height: 100%;
+			margin: 0;
+			opacity: 0;
+		}
+		&:not(:hover):has( > input[type=radio]:first-child:not(:checked))::before {
+			outline-offset: -2px;
+		}
+		&:not(:hover):has( > input[type=radio]:first-child:checked)::before {
+			outline: none;
+		}
+		&:has( > input[type=radio]:first-child:not(:checked)) {
+			& + section {
+				display: none;
+			}
+		}
+		&:has( > input[type=radio]:first-child:checked) {
+			/* highlight colors when checked */
+			--normal-background-color: var(--accent-color);
+			--normal-text-color: var(--background-color);
+			--highlight-background-color: var(--normal-background-color);
+			--highlight-text-color: var(--normal-text-color);
+			/* correctly positioned section */
+			& + section {
+				position: absolute;
+				top: 2.5em;
+				left: 0;
+				width: calc(100% - 2em);
+				height: calc(100% - 4.5em);
+				box-sizing: border-box;
+			}
+		}
+		&:active {
+			z-index: 1;
+		}
+		& + section {
+			margin: 1em;
+		}
+	}
+}

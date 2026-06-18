@@ -52,6 +52,32 @@ class Utils {
 		return Math.round(num * shift) / shift;
 	}
 	/**
+	 * @template {HTMLElement} T
+	 * @param {WeakRef<T>} element
+	 * @param {(element: T) => void} callback
+	 */
+	static _whileElementConnectedCallback(element, callback) {
+		var shouldContinue = (() => {
+			var e = element.deref();
+			if (e == undefined) {
+				return false;
+			} else {
+				callback(e);
+				return true;
+			}
+		})();
+		if (shouldContinue) requestAnimationFrame(() => this._whileElementConnectedCallback(element, callback))
+	}
+	/**
+	 * @template {HTMLElement} T
+	 * @param {T} element
+	 * @param {(element: T) => void} callback
+	 */
+	static whileElementConnectedCallback(element, callback) {
+		var elementRef = new WeakRef(element)
+		Utils._whileElementConnectedCallback(elementRef, callback)
+	}
+	/**
 	 * Uses canvas.measureText to compute and return the width of the given text of given font in pixels.
 	 *
 	 * @param {String} text The text to be rendered.
@@ -146,6 +172,13 @@ class ObjectProperty {
 	interpolate(time, endpoint) {
 		throw new Error("Cannot interpolate a base property's value")
 	}
+	/**
+	 * @param {() => void} update
+	 * @returns {HTMLElement[] | OptionsTreeNode[]}
+	 */
+	makeElements(update) {
+		throw new Error("Cannot visualize a base property")
+	}
 }
 class NumericProperty extends ObjectProperty {
 	/** @param {number} value */
@@ -174,6 +207,16 @@ class NumericProperty extends ObjectProperty {
 			var value = ((1-time) * this.value) + (time * endpoint.value)
 			return new NumericProperty(value)
 		} else throw new Error("Cannot interpolate NumericProperty with a differently-typed property")
+	}
+	/**
+	 * @param {() => void} update
+	 * @returns {HTMLElement[] | OptionsTreeNode[]}
+	 */
+	makeElements(update) {
+		var e = Options.number(null, () => this.value, (v) => { this.value = v; update(); })
+		e.setAttribute("min", "0")
+		e.setAttribute("max", "1")
+		return [e]
 	}
 }
 class PositionProperty extends ObjectProperty {
@@ -210,6 +253,21 @@ class PositionProperty extends ObjectProperty {
 			var y = ((1-time) * this.y) + (time * endpoint.y)
 			return new PositionProperty(x, y)
 		} else throw new Error("Cannot interpolate PositionProperty with a differently-typed property")
+	}
+	/**
+	 * @param {() => void} update
+	 * @returns {HTMLElement[] | OptionsTreeNode[]}
+	 */
+	makeElements(update) {
+		var x = Options.number(null, () => this.x, (v) => { this.x = v; update(); }); x.setAttribute("min", "0"); x.setAttribute("step", "0.01"); x.setAttribute("max", "1");
+		var y = Options.number(null, () => this.y, (v) => { this.y = v; update(); }); y.setAttribute("min", "0"); y.setAttribute("step", "0.01"); y.setAttribute("max", "1");
+		return [{
+			text: "X",
+			contents: [x]
+		}, {
+			text: "Y",
+			contents: [y]
+		}]
 	}
 }
 class ColorProperty extends ObjectProperty {
@@ -261,6 +319,29 @@ class ColorProperty extends ObjectProperty {
 			return new ColorProperty(r, g, b, a)
 		} else throw new Error("Cannot interpolate ColorProperty with a differently-typed property")
 	}
+	/**
+	 * @param {() => void} update
+	 * @returns {HTMLElement[] | OptionsTreeNode[]}
+	 */
+	makeElements(update) {
+		var r = Options.number(null, () => this.r, (v) => { this.r = v; update(); }); r.setAttribute("min", "0"); r.setAttribute("step", "1"); r.setAttribute("max", "255");
+		var g = Options.number(null, () => this.g, (v) => { this.g = v; update(); }); g.setAttribute("min", "0"); g.setAttribute("step", "1"); g.setAttribute("max", "255");
+		var b = Options.number(null, () => this.b, (v) => { this.b = v; update(); }); b.setAttribute("min", "0"); b.setAttribute("step", "1"); b.setAttribute("max", "255");
+		var a = Options.number(null, () => this.a, (v) => { this.a = v; update(); }); a.setAttribute("min", "0"); a.setAttribute("step", "1"); a.setAttribute("max", "255");
+		return [{
+			text: "R",
+			contents: [r]
+		}, {
+			text: "G",
+			contents: [g]
+		}, {
+			text: "B",
+			contents: [b]
+		}, {
+			text: "A",
+			contents: [a]
+		}]
+	}
 }
 class StringProperty extends ObjectProperty {
 	/** @param {string} value */
@@ -289,6 +370,14 @@ class StringProperty extends ObjectProperty {
 			var value = this.value
 			return new StringProperty(value)
 		} else throw new Error("Cannot interpolate StringProperty with a differently-typed property")
+	}
+	/**
+	 * @param {() => void} update
+	 * @returns {HTMLElement[] | OptionsTreeNode[]}
+	 */
+	makeElements(update) {
+		var e = Options.string(null, () => this.value, (v) => { this.value = v; update(); })
+		return [e]
 	}
 }
 
@@ -477,6 +566,289 @@ class ObjectRescaleHandle extends Handle {
 	}
 }
 
+class Options {
+	/**
+	 * @param {string} text
+	 * @returns {HTMLElement}
+	 */
+	static h(text) {
+		var e = document.createElement("h3")
+		e.innerText = text
+		return e
+	}
+	/**
+	 * @param {string} text
+	 * @returns {HTMLElement}
+	 */
+	static p(text) {
+		var e = document.createElement("p")
+		e.innerText = text
+		return e
+	}
+	/**
+	 * @param {{ text: string, onclick: (() => void) | null }[]} buttons
+	 * @returns {HTMLElement}
+	 */
+	static buttons(buttons) {
+		var e = document.createElement("div");
+		for (var buttonData of buttons) {
+			var b = e.appendChild(document.createElement("button"));
+			b.innerText = buttonData.text;
+			if (buttonData.onclick == null) b.disabled = true;
+			else b.addEventListener("click", buttonData.onclick);
+		}
+		return e;
+	}
+	/**
+	 * @param {string | null} text
+	 * @param {() => number} getter
+	 * @param {(value: number) => void} setter
+	 * @returns {HTMLElement}
+	 */
+	static number(text, getter, setter) {
+		if (text != null)  {
+			/** @type {HTMLElement} */
+			var c = document.createElement("div")
+			c.innerText = text
+			var e = c.appendChild(document.createElement("input"))
+		} else {
+			var e = document.createElement("input")
+			/** @type {HTMLElement} */
+			var c = e
+		}
+		e.setAttribute("type", "number")
+		e.setAttribute("style", `margin-left: 0.5em;`)
+		e.valueAsNumber = getter()
+		e.addEventListener("keydown", (event) => {
+			if (event.key == "Enter") {
+				// @ts-ignore
+				event.target.blur();
+			}
+		})
+		var isFocused = false;
+		Utils.whileElementConnectedCallback(e, (_e) => {
+			if (_e == document.activeElement) {
+				isFocused = true;
+			} else {
+				if (isFocused) {
+					// Element just became unfocused
+					setter(_e.valueAsNumber)
+					isFocused = false;
+				} else {
+					// set value from getter
+					var gotValue = getter()
+					if (_e.valueAsNumber != gotValue) _e.valueAsNumber = gotValue
+				}
+			}
+		})
+		return c
+	}
+	/**
+	 * @param {string | null} text
+	 * @param {() => string} getter
+	 * @param {(value: string) => void} setter
+	 * @returns {HTMLElement}
+	 */
+	static string(text, getter, setter) {
+		if (text != null)  {
+			/** @type {HTMLElement} */
+			var c = document.createElement("div")
+			c.innerText = text
+			var e = c.appendChild(document.createElement("input"))
+		} else {
+			var e = document.createElement("input")
+			/** @type {HTMLElement} */
+			var c = e
+		}
+		e.setAttribute("type", "text")
+		e.setAttribute("style", `margin-left: 0.5em;`)
+		e.value = getter()
+		e.addEventListener("keydown", (event) => {
+			if (event.key == "Enter") {
+				// @ts-ignore
+				event.target.blur();
+			}
+		})
+		var isFocused = false;
+		Utils.whileElementConnectedCallback(e, (_e) => {
+			if (_e == document.activeElement) {
+				isFocused = true;
+			} else {
+				if (isFocused) {
+					// Element just became unfocused
+					setter(_e.value)
+					isFocused = false;
+				} else {
+					// set value from getter
+					var gotValue = getter()
+					if (_e.value != gotValue) _e.value = gotValue
+				}
+			}
+		})
+		return c
+	}
+	/**
+	 * @typedef {{ text: string, contents: HTMLElement[] | OptionsTreeNode[] }} OptionsTreeNode
+	 * @param {OptionsTreeNode} rootNode
+	 */
+	static tree(rootNode) {
+		var e = document.createElement("div")
+		e.classList.add("tree-node")
+		e.appendChild(document.createTextNode(rootNode.text))
+		if (rootNode.contents.length == 0) return e;
+		if (rootNode.contents[0] instanceof HTMLElement) {
+			for (let i = 0; i < rootNode.contents.length; i++) {
+				/** @type {HTMLElement} */
+				// @ts-ignore
+				let f = rootNode.contents[i]; // are you serious TS? can you really not see that we checked if the element is of type HTMLElement?
+				e.appendChild(f);
+			}
+		} else {
+			for (let i = 0; i < rootNode.contents.length; i++) {
+				/** @type {OptionsTreeNode} */
+				// @ts-ignore
+				let f = rootNode.contents[i]; // oh come on
+				let subNode = Options.tree(f)
+				e.appendChild(subNode);
+			}
+		}
+		return e
+	}
+	/**
+	 * @param {() => void} update
+	 * @param {string[]} allKeys
+	 * @param {Map<string, ObjectProperty>} properties
+	 * @returns {OptionsTreeNode[]}
+	 */
+	static propertyMap(update, allKeys, properties) {
+		return allKeys.map((v) => {
+			var data = properties.get(v)
+			if (data == null) return {
+				text: v,
+				contents: []
+			}
+			else return {
+				text: v,
+				contents: data.makeElements(update)
+			}
+		});
+	}
+}
+class OptionsWindowTab {
+	/**
+	 * @param {string} name
+	 * @param {HTMLElement[]} contents
+	 */
+	constructor(name, contents) {
+		this.button = document.createElement("button")
+		var radio = this.button.appendChild(document.createElement("input"))
+			radio.setAttribute("type", "radio")
+			radio.setAttribute("name", "options")
+		this.button.appendChild(document.createTextNode(name))
+		this.section = document.createElement("section")
+		for (var c of contents) {
+			this.section.appendChild(c)
+		}
+	}
+	show() {
+		Utils.requireElement("tab-container").appendChild(this.button)
+		Utils.requireElement("tab-container").appendChild(this.section)
+	}
+	focus() {
+		this.button.children[0].dispatchEvent(new MouseEvent("click"))
+	}
+	/**
+	 * @param {HTMLElement[]} contents
+	 */
+	changeContents(contents) {
+		[...this.section.children].forEach((v) => v.remove())
+		for (var c of contents) {
+			this.section.appendChild(c)
+		}
+	}
+	hide() {
+		this.button.remove()
+		this.section.remove()
+	}
+}
+class ObjectPropertiesEditorTab extends OptionsWindowTab {
+	/**
+	 * @param {VideoEditorApp} app
+	 * @param {VObject} object
+	 */
+	constructor(app, object) {
+		super("Object Properties", ObjectPropertiesEditorTab.getContents(object, app.currentTime, (t) => app.setCurrentTime(t), () => app.updateViewportHandles()))
+		this.app = app
+		this.object = object
+	}
+	refresh() {
+		this.changeContents(ObjectPropertiesEditorTab.getContents(this.object, this.app.currentTime, (t) => this.app.setCurrentTime(t), () => this.app.updateViewportHandles()))
+	}
+	/**
+	 * @param {VObject} object
+	 * @param {number} time
+	 * @param {(time: number) => void} setTime
+	 * @param {() => void} onObjectUpdated
+	 */
+	static getContents(object, time, setTime, onObjectUpdated) {
+		// Find keyframe number
+		let idx = object.config.keyframes.findIndex((v) => v.time == time);
+		var keyframeNumber = object.config.startTime == time ? -1 : (idx == -1 ? null : idx);
+		if (keyframeNumber == null) {
+			return [
+				Options.h("Not at a keyframe"),
+				Options.buttons([
+					{ text: "Previous keyframe", onclick: ObjectPropertiesEditorTab.previousKeyframe(object, time, setTime) },
+					{ text: "Next keyframe", onclick: ObjectPropertiesEditorTab.nextKeyframe(object, time, setTime) }
+				]),
+				Options.p("Switch the timeline to one of this object's keyframes to edit its settings!")
+			]
+		} else {
+			return [
+				Options.h(`Keyframe ${keyframeNumber+2}`),
+				Options.buttons([
+					{ text: "Previous keyframe", onclick: ObjectPropertiesEditorTab.previousKeyframe(object, time, setTime) },
+					{ text: "Next keyframe", onclick: ObjectPropertiesEditorTab.nextKeyframe(object, time, setTime) }
+				]),
+				Options.tree({
+					text: `Keyframe ${keyframeNumber+2}`,
+					contents: Options.propertyMap(onObjectUpdated, [...object.getPropertiesAtKeyframe(keyframeNumber).keys()], object.config.keyframes[keyframeNumber]?.properties ?? object.config.initialProperties)
+				})
+			]
+		}
+	}
+	/**
+	 * @param {VObject} object
+	 * @param {number} time
+	 * @param {(time: number) => void} setTime
+	 * @returns {(() => void) | null}
+	 */
+	static previousKeyframe(object, time, setTime) {
+		if (time <= object.config.startTime) return null;
+		for (var i = 0; i < object.config.keyframes.length; i++) {
+			let t = object.config.keyframes[i].time
+			if (time <= t) return setTime.bind(null,
+				i == 0 ? object.config.startTime : object.config.keyframes[i - 1].time
+			)
+		}
+		return setTime.bind(null, object.config.keyframes[object.config.keyframes.length - 1].time)
+	}
+	/**
+	 * @param {VObject} object
+	 * @param {number} time
+	 * @param {(time: number) => void} setTime
+	 * @returns {(() => void) | null}
+	 */
+	static nextKeyframe(object, time, setTime) {
+		if (time < object.config.startTime) return setTime.bind(null, object.config.startTime)
+		for (var i = 0; i < object.config.keyframes.length; i++) {
+			let t = object.config.keyframes[i].time
+			if (time < t) return setTime.bind(null, object.config.keyframes[i].time)
+		}
+		return null;
+	}
+}
+
 class VObject {
 	/**
 	 * @param {number} startTime
@@ -624,15 +996,15 @@ class VText extends VObject {
 		// - text
 		var text = new StringProperty("Text goes here asdf asdf asdf asdf asdf")
 		var color = new ColorProperty(255, 255, 255, 255)
-		var textSize = new NumericProperty(16)
+		var textSize = new NumericProperty(0.015)
 		// create!
 		/** @type {[string, ObjectProperty][]} */
 		var properties = [
-			["centerPos", centerPos],
-			["width", width],
-			["text", text],
-			["color", color],
-			["textSize", textSize]
+			["Center Position", centerPos],
+			["Width", width],
+			["Text", text],
+			["Text Color", color],
+			["Text Size", textSize]
 		]
 		super(startTime, new Map(properties), 5)
 		// properties
@@ -687,7 +1059,7 @@ class VText extends VObject {
 	 * @returns {OffscreenCanvas}
 	 */
 	getVisualRepresentation(screenWidth, screenHeight) {
-		return this.renders.get(this.width.value * screenWidth, this.text.value, this.color.asobj(), this.textSize.value)
+		return this.renders.get(this.width.value * screenWidth, this.text.value, this.color.asobj(), this.textSize.value * screenWidth)
 	}
 	/**
 	 * @param {number} screenWidth
@@ -695,7 +1067,7 @@ class VText extends VObject {
 	 * @returns {{ x: number, y: number, width: number, height: number }}
 	 */
 	getPixelBoundingBox(screenWidth, screenHeight) {
-		var render = this.renders.get(this.width.value * screenWidth, this.text.value, this.color.asobj(), this.textSize.value);
+		var render = this.renders.get(this.width.value * screenWidth, this.text.value, this.color.asobj(), this.textSize.value * screenWidth);
 		var posX = (this.centerPos.x * screenWidth) - (render.width / 2)
 		var posY = (this.centerPos.y * screenHeight) - (render.height / 2)
 		return {
@@ -711,7 +1083,7 @@ class VText extends VObject {
 	 * @param {CanvasRenderingContext2D} canvas
 	 */
 	render(screenWidth, screenHeight, canvas) {
-		var render = this.renders.get(this.width.value * screenWidth, this.text.value, this.color.asobj(), this.textSize.value);
+		var render = this.renders.get(this.width.value * screenWidth, this.text.value, this.color.asobj(), this.textSize.value * screenWidth);
 		var posX = (this.centerPos.x * screenWidth) - (render.width / 2)
 		var posY = (this.centerPos.y * screenHeight) - (render.height / 2)
 		canvas.drawImage(render, Math.round(posX), Math.round(posY))
@@ -736,8 +1108,8 @@ class VText extends VObject {
 	 * @param {number} keyframe_number
 	 */
 	moveByPixels(screenWidth, screenHeight, delta, keyframe_number) {
-		// Set centerPos
-		var configuredPosition = this.requireProperty("centerPos", PositionProperty, keyframe_number)
+		// Set Center Position
+		var configuredPosition = this.requireProperty("Center Position", PositionProperty, keyframe_number)
 		configuredPosition.x += delta.x / screenWidth;
 		configuredPosition.y += delta.y / screenHeight;
 	}
@@ -747,11 +1119,11 @@ class VText extends VObject {
 	 */
 	rescaleBy(delta, keyframe_number) {
 		if (delta <= 0 || this.textSize.value * delta < 1) return;
-		// Set width
-		var configuredPosition = this.requireProperty("width", NumericProperty, keyframe_number)
+		// Set Width
+		var configuredPosition = this.requireProperty("Width", NumericProperty, keyframe_number)
 		configuredPosition.value *= delta;
-		// Set textSize
-		var configuredPosition = this.requireProperty("textSize", NumericProperty, keyframe_number)
+		// Set Text Size
+		var configuredPosition = this.requireProperty("Text Size", NumericProperty, keyframe_number)
 		configuredPosition.value *= delta;
 	}
 }
@@ -773,10 +1145,16 @@ class VideoEditorApp {
 		/** @type {VObject[]} */
 		this.objects = [];
 		this.objects.push(new VText(1)); // TEST
-		this.objects[0].config.keyframes[0].properties.set("centerPos", new PositionProperty(0.9, 0.6)) // TEST
-		this.objects[0].config.keyframes[0].properties.set("color", new ColorProperty(255, 0, 0, 255)) // TEST
-		/** @type {{ object: VObject, timelineHandles: Handle<[number]>[], viewportHandles: Handle<[number, number]>[], draggingHandle: { isTimeline: true, handle: Handle<[number]> } | { isTimeline: false, handle: Handle<[number, number]> } | null } | null} */
+		this.objects[0].config.keyframes[0].properties.set("Center Position", new PositionProperty(0.9, 0.6)) // TEST
+		this.objects[0].config.keyframes[0].properties.set("Text Color", new ColorProperty(255, 0, 0, 255)) // TEST
+		/** @type {{ object: VObject, timelineHandles: Handle<[number]>[], viewportHandles: Handle<[number, number]>[], draggingHandle: { isTimeline: true, handle: Handle<[number]> } | { isTimeline: false, handle: Handle<[number, number]> } | null, objectPropertiesTab: ObjectPropertiesEditorTab } | null} */
 		this.selection = null;
+		// main tab
+		this.mainOptionsTab = new OptionsWindowTab("Scene", [
+			Options.number("Current time:", () => this.currentTime, (v) => this.setCurrentTime(v))
+		])
+		this.mainOptionsTab.show()
+		this.mainOptionsTab.focus()
 		// timeline tracking
 		this.timelinePixelsPerSecond = 50;
 		/** @type {Map<VObject, HTMLElement>} */
@@ -935,6 +1313,8 @@ class VideoEditorApp {
 		if (n.textContent != timelineNumberText) n.textContent = timelineNumberText
 		// Update selection handles
 		this.updateViewportHandles();
+		// Update object properties tab
+		this.selection?.objectPropertiesTab.refresh()
 	}
 	onFrame() {
 		// redraw canvas
@@ -956,7 +1336,7 @@ class VideoEditorApp {
 		return targetTimeRounded
 	}
 	/** @param {number} targetTime */
-	scrollTimelineTo(targetTime) {
+	setCurrentTime(targetTime) {
 		this.blockScrollEventsFromUpdatingCurrentTime += 1
 		this.element_timeline.scrollTop = targetTime * this.timelinePixelsPerSecond;
 		this.currentTime = Math.max(targetTime, 0)
@@ -964,7 +1344,11 @@ class VideoEditorApp {
 	/** @param {VObject | null} object */
 	setSelectedObject(object) {
 		// Deselect previous object
-		if (this.selection != null) this.timelineElements.get(this.selection.object)?.classList.remove("selected")
+		if (this.selection != null) {
+			this.timelineElements.get(this.selection.object)?.classList.remove("selected")
+			this.selection.objectPropertiesTab.hide()
+			this.mainOptionsTab.focus()
+		}
 		for (let h of this.selection?.timelineHandles ?? []) {
 			h.element.remove()
 		}
@@ -978,8 +1362,11 @@ class VideoEditorApp {
 				object,
 				timelineHandles: [],
 				viewportHandles: [],
-				draggingHandle: null
+				draggingHandle: null,
+				objectPropertiesTab: new ObjectPropertiesEditorTab(this, object)
 			}
+			this.selection.objectPropertiesTab.show()
+			this.selection.objectPropertiesTab.focus()
 			// Start time handle
 			{
 				let start_time_handle = new KeyframeTimeHandle(this, object, -1);

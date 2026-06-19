@@ -18,4 +18,11 @@ class JSZip {
 	generateAsync(options) {
 		throw new Error()
 	}
+	/**
+	 * @param {ArrayBuffer | Uint8Array | Blob} data
+	 * @returns {Promise<JSZip>}
+	 */
+	static loadAsync(data) {
+		throw new Error()
+	}
 }

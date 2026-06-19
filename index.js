@@ -1124,6 +1124,61 @@ class VObject {
 		]) }
 	}
 	/**
+	 * @param {CustomJSONObject} data
+	 * @returns {VObject}
+	 */
+	static load(data) {
+		if (data.type != "map") throw new Error("Object data must be a map")
+		var dataMap = data.value
+		// get object type
+		{
+			let gotObjectType = dataMap.get("type")
+			if (gotObjectType == undefined) throw new Error("Object data must include object type")
+			if (gotObjectType.type != "string") throw new Error("Object type must be a string")
+			var objectType = gotObjectType.value;
+		}
+		// get object type
+		{
+			let gotStartTime = dataMap.get("startTime")
+			if (gotStartTime == undefined) throw new Error("Object data must include object start time")
+			if (gotStartTime.type != "number") throw new Error("Object start time must be a number")
+			var startTime = gotStartTime.value;
+		}
+		// construct object
+		if (objectType == "text") var object = new VText(startTime)
+		else throw new Error("Unknown object type: " + objectType)
+		// set initial properties
+		{
+			let gotInitialProperties = dataMap.get("initialProperties")
+			if (gotInitialProperties == undefined) throw new Error("Object data must include initial properties")
+			if (gotInitialProperties.type != "map") throw new Error("Initial properties must be a map")
+			var initialProperties = gotInitialProperties.value;
+		}
+		for (var propertyData of initialProperties) {
+			object.config.initialProperties.get(propertyData[0])?.setFrom(ObjectProperty.load(propertyData[1]))
+		}
+		// set keyframes
+		{
+			let gotKeyframes = dataMap.get("keyframes")
+			if (gotKeyframes == undefined) throw new Error("Object data must include keyframes")
+			if (gotKeyframes.type != "list") throw new Error("Object keyframes must be a list")
+			object.config.keyframes = gotKeyframes.value.map((v) => {
+				if (v.type != "map") throw new Error("Keyframe configuration must be a map")
+				var gotTime = v.value.get("time")
+				if (gotTime == undefined) throw new Error("Keyframe must include time")
+				if (gotTime.type != "number") throw new Error("Keyframe time must be a number")
+				var gotProperties = v.value.get("properties")
+				if (gotProperties == undefined) throw new Error("Keyframe must include property map")
+				if (gotProperties.type != "map") throw new Error("Keyframe properties must be a map")
+				return { time: gotTime.value, properties: new Map([...gotProperties.value].map((v) => {
+					var property = ObjectProperty.load(v[1])
+					return [v[0], property]
+				})) }
+			});
+		}
+		return object;
+	}
+	/**
 	 * @param {number} time
 	 * @returns {boolean}
 	 */
@@ -1412,7 +1467,8 @@ class VideoEditorApp {
 		this.mainOptionsTab = new OptionsWindowTab("Scene", [
 			Options.number("Current time:", () => this.currentTime, (v) => this.setCurrentTime(v)),
 			Options.buttons([
-				{ text: "Export Project", onclick: () => this.export() }
+				{ text: "Export Project", onclick: () => this.export() },
+				{ text: "Import Project", onclick: () => this.requestImport() }
 			])
 		])
 		this.mainOptionsTab.show()
@@ -1447,6 +1503,50 @@ class VideoEditorApp {
 		zip.generateAsync({ type: "blob" }).then((blob) => {
 			Utils.downloadBlob(blob, "project.zip")
 		})
+	}
+	requestImport() {
+		var e = document.createElement("input")
+		e.setAttribute("type", "file")
+		e.setAttribute("accept", "application/zip,.zip")
+		e.click()
+		e.addEventListener("input", () => {
+			if (e.files == null) return;
+			if (e.files.length == 0) return;
+			if (e.files.length > 1) return alert("Please only select one file")
+			var file = e.files[0]
+			this.import(file)
+		})
+	}
+	/**
+	 * @param {ArrayBuffer | Uint8Array | Blob} zipData
+	 */
+	async import(zipData) {
+		// Remove previous data
+		this.setSelectedObject(null)
+		this.objects = [] // garbage collection let's go
+		// Load zip file
+		var zip = await JSZip.loadAsync(zipData)
+		var projectDataBlob = await zip.file("project.dat").async("string")
+		var data = CustomJSON.decode(projectDataBlob)
+		if (data.type != "map") throw new Error("Main project data must be a map")
+		{
+			let aspect_ratio = data.value.get("aspect_ratio")
+			if (aspect_ratio == undefined) throw new Error("Main project data must contain aspect ratio")
+			if (aspect_ratio.type != "number") throw new Error("Aspect ratio must be a number")
+			this.video_aspect_ratio = aspect_ratio.value
+		}
+		{
+			let objects = data.value.get("objects")
+			if (objects == undefined) throw new Error("Main project data must contain object list")
+			if (objects.type != "list") throw new Error("Object list must be a list")
+			for (var objectData of objects.value) {
+				var constructedObject = VObject.load(objectData)
+				this.objects.push(constructedObject)
+			}
+		}
+		// Refresh everything
+		this.updateTimelineTicks();
+		this.updateAllTimelineElements(true);
 	}
 	/** @param {number} amount */
 	zoomTimeline(amount) {

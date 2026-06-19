@@ -748,7 +748,7 @@ class Options {
 		return e
 	}
 	/**
-	 * @param {{ text: string, onclick: (() => void) | null }[]} buttons
+	 * @param {{ text: string, onclick: (() => void) | null, color?: undefined | string }[]} buttons
 	 * @returns {HTMLElement}
 	 */
 	static buttons(buttons) {
@@ -756,6 +756,7 @@ class Options {
 		for (var buttonData of buttons) {
 			var b = e.appendChild(document.createElement("button"));
 			b.innerText = buttonData.text;
+			if (buttonData.color != undefined) b.setAttribute("style", `--accent-color: ${buttonData.color};`)
 			if (buttonData.onclick == null) b.disabled = true;
 			else b.addEventListener("click", buttonData.onclick);
 		}
@@ -1070,15 +1071,21 @@ class ObjectPropertiesEditorTab extends OptionsWindowTab {
 			this.app.updateAllTimelineElements(false)
 			this.app.refreshTimelinePreviews(this.object)
 			this.app.updateHandlePositions()
+			this.app.updateViewportHandlesExistence()
 			this.app.refreshSelectionTabs()
+		}, () => {
+			this.app.setSelectedObject(null)
+			this.app.objects.splice(this.app.objects.indexOf(this.object), 1)
+			this.app.updateAllTimelineElements(false)
 		}))
 	}
 	/**
 	 * @param {VObject} object
 	 * @param {() => void} onObjectPropertiesUpdated
 	 * @param {() => void} onObjectTimingUpdated
+	 * @param {() => void} deleteObject
 	 */
-	static getContents(object, onObjectPropertiesUpdated, onObjectTimingUpdated) {
+	static getContents(object, onObjectPropertiesUpdated, onObjectTimingUpdated, deleteObject) {
 		var treeItems = [object.config.initialProperties, ...object.config.keyframes.map((v) => v.properties)].flatMap((v, i) => ({
 			text: `Keyframe ${i+1} at time`,
 			contents: [
@@ -1091,11 +1098,14 @@ class ObjectPropertiesEditorTab extends OptionsWindowTab {
 			children: Options.propertyMap(onObjectPropertiesUpdated, [...object.getPropertiesAtKeyframe(i - 1).keys()], v, i != 0, object.getPropertiesAtKeyframe(i - 1))
 		}))
 		return [
-				Options.tree({
+			Options.tree({
 				text: "All Object Properties",
 				contents: [],
 				children: treeItems
-			})
+			}),
+			Options.buttons([
+				{ text: "Delete Object", onclick: deleteObject, color: "#F00" }
+			])
 		]
 	}
 }
@@ -1315,7 +1325,7 @@ class VText extends VObject {
 		var centerPos = new PositionProperty(0.5, 0.5)
 		var width = new NumericProperty(0.15)
 		// - text
-		var text = new StringProperty("Text goes here asdf asdf asdf asdf asdf")
+		var text = new StringProperty("Text")
 		var color = new ColorProperty(255, 255, 255, 255)
 		var textSize = new NumericProperty(0.015)
 		// create!
@@ -1481,6 +1491,14 @@ class VideoEditorApp {
 			Options.buttons([
 				{ text: "Export Project", onclick: () => this.export() },
 				{ text: "Import Project", onclick: () => this.requestImport() }
+			]),
+			Options.h("Create an object..."),
+			Options.buttons([
+				{ text: "Text", onclick: () => this.addObject(VText, new Map([
+					["Text", new StringProperty(prompt("Enter the text to display:", "Text") ?? (() => {
+						throw new Error("Cancelled by user")
+					})())]
+				]), true) }
 			])
 		])
 		this.mainOptionsTab.show()
@@ -1559,6 +1577,30 @@ class VideoEditorApp {
 		// Refresh everything
 		this.updateTimelineTicks();
 		this.updateAllTimelineElements(true);
+	}
+	/**
+	 * @param {new (startTime: number) => VObject} objClass
+	 * @param {Map<string, ObjectProperty>} properties
+	 * @param {boolean} select
+	 */
+	addObject(objClass, properties, select) {
+		var object = new objClass(this.currentTime)
+		for (var entry of properties) {
+			var existingProperty = object.config.initialProperties.get(entry[0])
+			if (existingProperty == undefined) throw new Error("Can't add object with property '" + entry[0] + "' as that property doesn't exist")
+			existingProperty.setFrom(entry[1])
+		}
+		// Add the object!
+		this.objects.push(object)
+		// update everything
+		this.updateTimelineTicks();
+		this.updateAllTimelineElements(false);
+		if (select) {
+			this.setSelectedObject(object)
+		}
+		// add previews to timeline element
+		var timelineElement = this.timelineElements.get(object);
+		if (timelineElement != undefined) this.addPreviewToTimelineElement(object, timelineElement);
 	}
 	/** @param {number} amount */
 	zoomTimeline(amount) {

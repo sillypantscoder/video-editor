@@ -112,6 +112,109 @@ class Utils {
 		ctx.fillText(text, 0, size.baseline);
 		return image;
 	}
+	/**
+	 * @param {Blob} blob
+	 * @param {string} filename
+	 */
+	static downloadBlob(blob, filename) {
+		var url = URL.createObjectURL(blob);
+		// Create link element
+		var a = document.createElement('a');
+		a.setAttribute("style", "display: none;")
+		a.href = url;
+		a.download = filename;
+		document.body.appendChild(a);
+		a.click();
+		// Cleanup
+		document.body.removeChild(a);
+		URL.revokeObjectURL(url);
+	}
+}
+/**
+ * @typedef {{ type: "number", value: number } | { type: "string", value: string } | { type: "boolean", value: boolean } | { type: "list", value: CustomJSONObject[] } | { type: "map", value: Map<string, CustomJSONObject> } | { type: "null" }} CustomJSONObject
+ */
+class CustomJSON {
+	/**
+	 * @param {CustomJSONObject} object
+	 * @returns {string}
+	 */
+	static encode(object) {
+		if (object.type == "number") {
+			var str = object.value.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 20 });
+			return "#" + str;
+		} else if (object.type == "string") {
+			return "\"" + object.value.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"").replaceAll(";", "\\;");
+		} else if (object.type == "boolean") {
+			return object.value ? "+" : "-"
+		} else if (object.type == "list") {
+			return "[" + object.value.length + object.value.map((v) => CustomJSON.encode(v)).join(";") + ";"
+		} else if (object.type == "map") {
+			return "{" + object.value.size + ";" + [...object.value.entries()].map((v) =>
+				v[0].replaceAll("\\", "\\\\").replaceAll("#", "\\#").replaceAll("\"", "\\\"").replaceAll("[", "\\[").replaceAll("{", "\\{") + CustomJSON.encode(v[1]) + ";"
+			).join("")
+		} else {
+			return "/";
+		}
+	}
+	/**
+	 * @param {string} data
+	 * @returns {CustomJSONObject}
+	 */
+	static decode(data) {
+		var chars = [...data.split(""), "[END]"]
+		/**
+		 * @param {string[]} endChars
+		 * @returns {CustomJSONObject}
+		 */
+		function readValue(endChars) {
+			if (chars[0] == "#") {
+				chars.shift()
+				var objData = chars.splice(0, chars.findIndex((v) => endChars.includes(v))).join("")
+				return { type: "number", value: Number(objData) }
+			} else if (chars[0] == "\"") {
+				chars.shift()
+				var stringData = ""
+				while (! endChars.includes(chars[0])) {
+					// @ts-ignore
+					if (chars[0] == "\\") {
+						chars.shift()
+						stringData += chars.shift()
+					}
+					stringData += chars.shift()
+				}
+				return { type: "string", value: stringData }
+			} else if (chars[0] == "+") {
+				return { type: "boolean", value: true }
+			} else if (chars[0] == "-") {
+				return { type: "boolean", value: false }
+			} else if (chars[0] == "[") {
+				chars.shift()
+				let arrayLength = Number(chars.splice(0, chars.findIndex((v) => ["#", "\"", "+", "-", "[", "{", "/"].includes(v))).join(""))
+				/** @type {CustomJSONObject[]} */
+				let parsed = []
+				for (let i = 0; i < arrayLength; i++) {
+					let value = readValue([";"])
+					chars.shift()
+					parsed.push(value)
+				}
+				return { type: "list", value: parsed }
+			} else if (chars[0] == "{") {
+				chars.shift()
+				let mapLength = Number(chars.splice(0, chars.findIndex((v) => v == ";")).join(""))
+				chars.shift()
+				/** @type {Map<string, CustomJSONObject>} */
+				let parsed = new Map()
+				for (let i = 0; i < mapLength; i++) {
+					let key = chars.splice(0, chars.findIndex((v) => ["#", "\"", "+", "-", "[", "{", "/"].includes(v))).join("");
+					let value = readValue([";"])
+					chars.shift()
+					parsed.set(key, value)
+				}
+				return { type: "map", value: parsed }
+			} else return { type: "null" }
+		}
+		return readValue(["[END]"])
+	}
 }
 
 /**
@@ -160,6 +263,29 @@ class ObjectProperty {
 	copy() {
 		throw new Error("Cannot copy a base property")
 	}
+	/** @returns {CustomJSONObject} */
+	save() {
+		throw new Error("Cannot convert a base property to JSON")
+	}
+	/**
+	 * @param {CustomJSONObject} data
+	 * @returns {ObjectProperty}
+	 */
+	static load(data) {
+		if (data.type == "number") return new NumericProperty(data.value)
+		else if (data.type == "string") return new StringProperty(data.value)
+		else if (data.type == "map") {
+			var x = data.value.get("x")
+			var y = data.value.get("y")
+			if (x != undefined && y != undefined && x.type == "number" && y.type == "number") return new PositionProperty(x.value, y.value)
+			var r = data.value.get("r")
+			var g = data.value.get("g")
+			var b = data.value.get("b")
+			var a = data.value.get("a")
+			if (r != undefined && g != undefined && b != undefined && a != undefined && r.type == "number" && g.type == "number" && b.type == "number" && a.type == "number") return new ColorProperty(r.value, g.value, b.value, a.value)
+		}
+		throw new Error("Invalid saved property data")
+	}
 	/** @param {ObjectProperty} property */
 	setFrom(property) {
 		throw new Error("Cannot set a base property's value")
@@ -190,6 +316,10 @@ class NumericProperty extends ObjectProperty {
 	/** @returns {NumericProperty} */
 	copy() {
 		return new NumericProperty(this.value)
+	}
+	/** @returns {CustomJSONObject} */
+	save() {
+		return { type: "number", value: this.value }
 	}
 	/** @param {ObjectProperty} property */
 	setFrom(property) {
@@ -235,6 +365,13 @@ class PositionProperty extends ObjectProperty {
 	/** @returns {PositionProperty} */
 	copy() {
 		return new PositionProperty(this.x, this.y)
+	}
+	/** @returns {CustomJSONObject} */
+	save() {
+		return { type: "map", value: new Map([
+			["x", { type: "number", value: this.x }],
+			["y", { type: "number", value: this.y }]
+		]) }
 	}
 	/** @param {ObjectProperty} property */
 	setFrom(property) {
@@ -302,6 +439,15 @@ class ColorProperty extends ObjectProperty {
 	copy() {
 		return new ColorProperty(this.r, this.g, this.b, this.a)
 	}
+	/** @returns {CustomJSONObject} */
+	save() {
+		return { type: "map", value: new Map([
+			["r", { type: "number", value: this.r }],
+			["g", { type: "number", value: this.g }],
+			["b", { type: "number", value: this.b }],
+			["a", { type: "number", value: this.a }]
+		]) }
+	}
 	/** @param {ObjectProperty} property */
 	setFrom(property) {
 		if (property instanceof ColorProperty) {
@@ -365,6 +511,10 @@ class StringProperty extends ObjectProperty {
 	/** @returns {StringProperty} */
 	copy() {
 		return new StringProperty(this.value)
+	}
+	/** @returns {CustomJSONObject} */
+	save() {
+		return { type: "string", value: this.value }
 	}
 	/** @param {ObjectProperty} property */
 	setFrom(property) {
@@ -956,6 +1106,23 @@ class VObject {
 			]
 		}
 	}
+	/** @returns {{ type: "map", value: Map<string, CustomJSONObject> }} */
+	save() {
+		return { type: "map", value: new Map([
+			["startTime", { type: "number", value: this.config.startTime }],
+			["initialProperties", { type: "map", value: new Map(
+				[...this.config.initialProperties].map((v) => [v[0], v[1].save()])
+			) }],
+			["keyframes", { type: "list", value:
+				this.config.keyframes.map((v) => ({ type: "map", value: new Map([
+					["time", { type: "number", value: v.time }],
+					["properties", { type: "map", value: new Map(
+						[...v.properties].map((v) => [v[0], v[1].save()])
+					) }]
+				]) }))
+			}]
+		]) }
+	}
 	/**
 	 * @param {number} time
 	 * @returns {boolean}
@@ -1104,6 +1271,13 @@ class VText extends VObject {
 		/** @type {CacheMap<[number, string, { r: number, g: number, b: number, a: number }, number], OffscreenCanvas>} */
 		this.renders = new CacheMap(VText.createRender, 10)
 	}
+	/** @returns {{ type: "map", value: Map<string, CustomJSONObject> }} */
+	save() {
+		return { type: "map", value: new Map([
+			["type", { type: "string", value: "text" }],
+			...super.save().value
+		]) }
+	}
 	/**
 	 * @param {number} width
 	 * @param {string} text
@@ -1236,7 +1410,10 @@ class VideoEditorApp {
 		this.selection = null;
 		// main tab
 		this.mainOptionsTab = new OptionsWindowTab("Scene", [
-			Options.number("Current time:", () => this.currentTime, (v) => this.setCurrentTime(v))
+			Options.number("Current time:", () => this.currentTime, (v) => this.setCurrentTime(v)),
+			Options.buttons([
+				{ text: "Export Project", onclick: () => this.export() }
+			])
 		])
 		this.mainOptionsTab.show()
 		this.mainOptionsTab.focus()
@@ -1253,6 +1430,23 @@ class VideoEditorApp {
 		this.onScroll();
 		this.updateTimelineTicks();
 		this.updateAllTimelineElements(true);
+	}
+	/** @returns {{ type: "map", value: Map<string, CustomJSONObject> }} */
+	save() {
+		return { type: "map", value: new Map([
+			["aspect_ratio", { type: "number", value: this.video_aspect_ratio }],
+			["objects", { type: "list", value: this.objects.map((v) => v.save()) }]
+		]) }
+	}
+	export() {
+		// Save file
+		var data = CustomJSON.encode(this.save())
+		// Zip
+		var zip = new JSZip();
+		zip.file("project.dat", data)
+		zip.generateAsync({ type: "blob" }).then((blob) => {
+			Utils.downloadBlob(blob, "project.zip")
+		})
 	}
 	/** @param {number} amount */
 	zoomTimeline(amount) {

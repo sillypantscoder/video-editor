@@ -748,17 +748,25 @@ class Options {
 		return e
 	}
 	/**
+	 * @param {{ text: string, onclick: (() => void) | null, color?: undefined | string }} buttonData
+	 * @returns {HTMLElement}
+	 */
+	static button(buttonData) {
+		var b = document.createElement("button");
+		b.innerText = buttonData.text;
+		if (buttonData.color != undefined) b.setAttribute("style", `--accent-color: ${buttonData.color};`)
+		if (buttonData.onclick == null) b.disabled = true;
+		else b.addEventListener("click", buttonData.onclick);
+		return b;
+	}
+	/**
 	 * @param {{ text: string, onclick: (() => void) | null, color?: undefined | string }[]} buttons
 	 * @returns {HTMLElement}
 	 */
 	static buttons(buttons) {
 		var e = document.createElement("div");
 		for (var buttonData of buttons) {
-			var b = e.appendChild(document.createElement("button"));
-			b.innerText = buttonData.text;
-			if (buttonData.color != undefined) b.setAttribute("style", `--accent-color: ${buttonData.color};`)
-			if (buttonData.onclick == null) b.disabled = true;
-			else b.addEventListener("click", buttonData.onclick);
+			e.appendChild(Options.button(buttonData));
 		}
 		return e;
 	}
@@ -983,15 +991,22 @@ class ObjectCustomEditorTab extends OptionsWindowTab {
 			this.app.refreshTimelinePreviews(this.object)
 			this.app.updateViewportHandlesExistence()
 			this.app.refreshSelectionTabs()
+		}, () => {
+			this.app.updateAllTimelineElements(false)
+			this.app.refreshTimelinePreviews(this.object)
+			this.app.updateHandlePositions()
+			this.app.updateViewportHandlesExistence()
+			this.app.refreshSelectionTabs()
 		}))
 	}
 	/**
 	 * @param {VObject} object
 	 * @param {number} time
 	 * @param {(time: number) => void} setTime
-	 * @param {() => void} onObjectUpdated
+	 * @param {() => void} onObjectPropertiesUpdated
+	 * @param {() => void} onObjectTimingUpdated
 	 */
-	static getContents(object, time, setTime, onObjectUpdated) {
+	static getContents(object, time, setTime, onObjectPropertiesUpdated, onObjectTimingUpdated) {
 		// Find keyframe number
 		let idx = object.config.keyframes.findIndex((v) => v.time == time);
 		var keyframeNumber = object.config.startTime == time ? -1 : (idx == -1 ? null : idx);
@@ -1000,7 +1015,8 @@ class ObjectCustomEditorTab extends OptionsWindowTab {
 				Options.h("Not at a keyframe"),
 				Options.buttons([
 					{ text: "Previous keyframe", onclick: ObjectCustomEditorTab.previousKeyframe(object, time, setTime) },
-					{ text: "Next keyframe", onclick: ObjectCustomEditorTab.nextKeyframe(object, time, setTime) }
+					{ text: "Next keyframe", onclick: ObjectCustomEditorTab.nextKeyframe(object, time, setTime) },
+					{ text: "Create keyframe here", onclick: ObjectCustomEditorTab.createKeyframe(object, time, onObjectTimingUpdated) }
 				]),
 				Options.p("Move the timeline to one of this object's keyframes (or click one of the buttons above) to edit its settings!")
 			]
@@ -1015,7 +1031,7 @@ class ObjectCustomEditorTab extends OptionsWindowTab {
 				Options.tree({
 					text: `Properties at keyframe ${keyframeNumber+2}`,
 					contents: [],
-					children: Options.propertyMap(onObjectUpdated, [...defaults.keys()], object.config.keyframes[keyframeNumber]?.properties ?? object.config.initialProperties, keyframeNumber != -1, defaults)
+					children: Options.propertyMap(onObjectPropertiesUpdated, [...defaults.keys()], object.config.keyframes[keyframeNumber]?.properties ?? object.config.initialProperties, keyframeNumber != -1, defaults)
 				})
 			]
 		}
@@ -1049,6 +1065,42 @@ class ObjectCustomEditorTab extends OptionsWindowTab {
 			if (time < t) return setTime.bind(null, object.config.keyframes[i].time)
 		}
 		return null;
+	}
+	/**
+	 * @param {VObject} object
+	 * @param {number} time
+	 * @param {() => void} onObjectTimingUpdated
+	 * @returns {() => void}
+	 */
+	static createKeyframe(object, time, onObjectTimingUpdated) {
+		if (time < object.config.startTime) return () => {
+			// Insert new keyframe at beginnning
+			object.config.keyframes.unshift({
+				time: object.config.startTime,
+				properties: new Map()
+			})
+			object.config.startTime = time
+			onObjectTimingUpdated()
+		}
+		for (var i = 0; i < object.config.keyframes.length; i++) {
+			let t = object.config.keyframes[i].time
+			if (time < t) return ((/** @type {number} */ i) => {
+				// Insert new keyframe between two other keyframes
+				object.config.keyframes.splice(i, 0, {
+					time: time,
+					properties: object.getPropertiesAtTime(time) ?? Utils.copyPropertyMap(object.config.initialProperties)
+				})
+				onObjectTimingUpdated()
+			}).bind(null, i)
+		}
+		return () => {
+			// Add new keyframe to end
+			object.config.keyframes.push({
+				time: time,
+				properties: new Map()
+			})
+			onObjectTimingUpdated()
+		}
 	}
 }
 class ObjectPropertiesEditorTab extends OptionsWindowTab {
@@ -1093,7 +1145,26 @@ class ObjectPropertiesEditorTab extends OptionsWindowTab {
 					if (i == 0) object.config.startTime = v;
 					else object.config.keyframes[i-1].time = v;
 					onObjectTimingUpdated();
-				})
+				}),
+				...(object.config.keyframes.length > 1 ? [Options.button({ text: "Delete Keyframe", onclick: i == 0 ? () => {
+					// Delete first keyframe
+					object.config.initialProperties = object.getPropertiesAtKeyframe(0) // collapse property maps
+					object.config.startTime = object.config.keyframes[0].time
+					object.config.keyframes.shift()
+					onObjectTimingUpdated()
+				} : () => {
+					// Delete another keyframe
+					object.config.keyframes.splice(i-1, 1)
+					onObjectTimingUpdated()
+				} })] : []),
+				Options.button({ text: "Insert Keyframe After", onclick: () => {
+					var targetTime = (i == object.config.keyframes.length) ? (object.config.keyframes[i-1].time + 1) : (((object.config.keyframes[i-1]?.time ?? object.config.startTime) + object.config.keyframes[i].time) / 2)
+					object.config.keyframes.splice(i, 0, {
+						time: targetTime,
+						properties: new Map()
+					})
+					onObjectTimingUpdated()
+				} })
 			],
 			children: Options.propertyMap(onObjectPropertiesUpdated, [...object.getPropertiesAtKeyframe(i - 1).keys()], v, i != 0, object.getPropertiesAtKeyframe(i - 1))
 		}))
@@ -1830,7 +1901,7 @@ class VideoEditorApp {
 				this.selection.timelineHandles.push(start_time_handle);
 				this.element_timeline.appendChild(start_time_handle.element);
 			}
-			// Keyframe handle
+			// Keyframe handles
 			for (var i = 0; i < object.config.keyframes.length; i++) {
 				let keyframe_handle = new KeyframeTimeHandle(this, object, i);
 				this.selection.timelineHandles.push(keyframe_handle);
@@ -1854,8 +1925,19 @@ class VideoEditorApp {
 	}
 	updateHandlePositions() {
 		if (this.selection == null) return;
-		for (let h of this.selection.timelineHandles) {
-			h.updateFromObject()
+		for (var i = -1; i < this.selection.object.config.keyframes.length; i++) {
+			if (i + 1 < this.selection.timelineHandles.length) {
+				this.selection.timelineHandles[i+1].updateFromObject()
+			} else {
+				let keyframe_handle = new KeyframeTimeHandle(this, this.selection.object, i);
+				this.selection.timelineHandles.push(keyframe_handle);
+				this.element_timeline.appendChild(keyframe_handle.element);
+			}
+		}
+		while (this.selection.timelineHandles.length > this.selection.object.config.keyframes.length + 1) {
+			let last_handle = this.selection.timelineHandles[this.selection.timelineHandles.length - 1]
+			last_handle.element.remove()
+			this.selection.timelineHandles.splice(this.selection.timelineHandles.length - 1, 1)
 		}
 		for (let h of this.selection.viewportHandles) {
 			h.updateFromObject()

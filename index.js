@@ -215,7 +215,7 @@ class NumericProperty extends ObjectProperty {
 	makeElements(update) {
 		var e = Options.number(null, () => this.value, (v) => { this.value = v; update(); })
 		e.setAttribute("min", "0")
-		e.setAttribute("step", "0.005")
+		e.setAttribute("step", "0.001")
 		e.setAttribute("max", "1")
 		return { contents: [e], children: [] }
 	}
@@ -485,7 +485,7 @@ class InvisibleObjectMoveHandle extends Handle {
 	 * @param {VideoEditorApp} app
 	 * @param {VObject} object
 	 * @param {{ x: number, y: number }} initialPos
-	 * @param {(screenWidth: number, screenHeight: number, delta: { x: number, y: number }, keyframe_number: number) => void} move_by
+	 * @param {(delta: { x: number, y: number }, keyframe_number: number) => void} move_by
 	 * @param {number} keyframe_number
 	 */
 	constructor(app, object, initialPos, move_by, keyframe_number) {
@@ -503,7 +503,7 @@ class InvisibleObjectMoveHandle extends Handle {
 		// update pos
 		super.moveTo(newPos)
 		// move by
-		this.move_by_callback(this.app.element_preview.width, this.app.element_preview.height, difference, this.keyframe_number)
+		this.move_by_callback(difference, this.keyframe_number)
 	}
 	updateFromObject() {}
 }
@@ -513,7 +513,7 @@ class ObjectRescaleHandle extends Handle {
 	 * @param {VideoEditorApp} app
 	 * @param {VObject} object
 	 * @param {{ x: 1 | -1, y: 1 | -1 }} corner
-	 * @param {(screenWidth: number, screenHeight: number, delta: { x: number, y: number }, keyframe_number: number) => void} move_by
+	 * @param {(delta: { x: number, y: number }, keyframe_number: number) => void} move_by
 	 * @param {(delta: number, keyframe_number: number) => void} rescale_by
 	 * @param {number} keyframe_number
 	 */
@@ -533,13 +533,17 @@ class ObjectRescaleHandle extends Handle {
 	 */
 	static get_pos(screenWidth, screenHeight, object, corner) {
 		var box = object.getPixelBoundingBox(screenWidth, screenHeight)
-		return {
+		var pixelPos = {
 			x: box.x + (corner.x == 1 ? box.width : 0),
 			y: box.y + (corner.y == 1 ? box.height : 0)
 		}
+		return {
+			x: pixelPos.x / screenWidth,
+			y: pixelPos.y / screenHeight
+		}
 	}
 	updatePos() {
-		this.element.setAttribute("style", ` --x: ${this.pos[0] - (app.element_preview.width / 2)}px; --y: ${this.pos[1] - (app.element_preview.height / 2)}px;`)
+		this.element.setAttribute("style", ` --x: ${(this.pos[0] - 0.5) * this.app.element_preview.width}px; --y: ${(this.pos[1] - 0.5) * this.app.element_preview.height}px;`)
 	}
 	/** @param {[number, number]} newPos */
 	moveTo(newPos) {
@@ -564,7 +568,7 @@ class ObjectRescaleHandle extends Handle {
 			y: previousDifference.y * (alignedNewDistance - previousDistance) / (2 * previousDistance)
 		}
 		this.rescale_by_callback(scaleFactor, this.keyframe_number)
-		this.move_by_callback(this.app.element_preview.width, this.app.element_preview.height, moveAmount, this.keyframe_number)
+		this.move_by_callback(moveAmount, this.keyframe_number)
 	}
 	updateFromObject() {
 		var pos = ObjectRescaleHandle.get_pos(this.app.element_preview.width, this.app.element_preview.height, this.object, this.corner)
@@ -1061,12 +1065,10 @@ class VObject {
 		throw new Error("Cannot get handles of a base object")
 	}
 	/**
-	 * @param {number} screenWidth
-	 * @param {number} screenHeight
 	 * @param {{ x: number, y: number }} delta
 	 * @param {number} keyframe_number
 	 */
-	moveByPixels(screenWidth, screenHeight, delta, keyframe_number) {
+	moveBy(delta, keyframe_number) {
 		throw new Error("Cannot move a base object")
 	}
 }
@@ -1180,23 +1182,21 @@ class VText extends VObject {
 	 */
 	getViewportHandles(keyframe_number, app) {
 		return [
-			new ObjectRescaleHandle(app, this, { x: -1, y: -1 }, this.moveByPixels.bind(this), this.rescaleBy.bind(this), keyframe_number),
-			new ObjectRescaleHandle(app, this, { x: 1, y: -1 }, this.moveByPixels.bind(this), this.rescaleBy.bind(this), keyframe_number),
-			new ObjectRescaleHandle(app, this, { x: -1, y: 1 }, this.moveByPixels.bind(this), this.rescaleBy.bind(this), keyframe_number),
-			new ObjectRescaleHandle(app, this, { x: 1, y: 1 }, this.moveByPixels.bind(this), this.rescaleBy.bind(this), keyframe_number)
+			new ObjectRescaleHandle(app, this, { x: -1, y: -1 }, this.moveBy.bind(this), this.rescaleBy.bind(this), keyframe_number),
+			new ObjectRescaleHandle(app, this, { x: 1, y: -1 }, this.moveBy.bind(this), this.rescaleBy.bind(this), keyframe_number),
+			new ObjectRescaleHandle(app, this, { x: -1, y: 1 }, this.moveBy.bind(this), this.rescaleBy.bind(this), keyframe_number),
+			new ObjectRescaleHandle(app, this, { x: 1, y: 1 }, this.moveBy.bind(this), this.rescaleBy.bind(this), keyframe_number)
 		]
 	}
 	/**
-	 * @param {number} screenWidth
-	 * @param {number} screenHeight
 	 * @param {{ x: number, y: number }} delta
 	 * @param {number} keyframe_number
 	 */
-	moveByPixels(screenWidth, screenHeight, delta, keyframe_number) {
+	moveBy(delta, keyframe_number) {
 		// Set Center Position
 		var configuredPosition = this.requireProperty("Center Position", PositionProperty, keyframe_number)
-		configuredPosition.x += delta.x / screenWidth;
-		configuredPosition.y += delta.y / screenHeight;
+		configuredPosition.x += delta.x;
+		configuredPosition.y += delta.y;
 	}
 	/**
 	 * @param {number} delta
@@ -1429,6 +1429,18 @@ class VideoEditorApp {
 		let targetTimeRounded = Math.round(targetTimeExact / stepSize) * stepSize
 		return targetTimeRounded
 	}
+	/**
+	 * @param {number} mouseX
+	 * @param {number} mouseY
+	 */
+	getRoundedViewportPosition(mouseX, mouseY) {
+		let rect = this.element_preview.getBoundingClientRect()
+		let xExact = (mouseX - rect.left) / this.element_preview.width
+		let yExact = (mouseY - rect.top) / this.element_preview.height
+		let xRounded = Math.round(xExact * 1000) / 1000
+		let yRounded = Math.round(yExact * 1000) / 1000
+		return { x: xRounded, y: yRounded }
+	}
 	/** @param {number} targetTime */
 	setCurrentTime(targetTime) {
 		this.blockScrollEventsFromUpdatingCurrentTime += 1
@@ -1531,7 +1543,7 @@ class VideoEditorApp {
 				// De-select current object or select this object
 				if (this.selection != null) {
 					if (this.selection.object != this.objects[i]) this.setSelectedObject(null);
-					else this.startDraggingInvisibleViewportHandleForObject(this.selection.object, { x, y });
+					else this.startDraggingInvisibleViewportHandleForObject(this.selection.object, { x: event.clientX, y: event.clientY });
 				} else this.setSelectedObject(this.objects[i]);
 				return;
 			}
@@ -1589,10 +1601,11 @@ class VideoEditorApp {
 	}
 	/**
 	 * @param {VObject} object
-	 * @param {{ x: number, y: number }} currentMousePos
+	 * @param {{ x: number, y: number }} pixelMousePos
 	 */
-	startDraggingInvisibleViewportHandleForObject(object, currentMousePos) {
+	startDraggingInvisibleViewportHandleForObject(object, pixelMousePos) {
 		if (this.selection == null || this.selection.draggingHandle != null) return;
+		var mousePos = this.getRoundedViewportPosition(pixelMousePos.x, pixelMousePos.y)
 		// Find keyframe number
 		let idx = this.selection.object.config.keyframes.findIndex((v) => v.time == this.currentTime);
 		var keyframeNumber = this.selection.object.config.startTime == this.currentTime ? -1 : (idx == -1 ? null : idx);
@@ -1600,7 +1613,7 @@ class VideoEditorApp {
 			// Select viewport handle
 			this.selection.draggingHandle = {
 				isTimeline: false,
-				handle: new InvisibleObjectMoveHandle(this, object, currentMousePos, object.moveByPixels.bind(object), keyframeNumber)
+				handle: new InvisibleObjectMoveHandle(this, object, mousePos, object.moveBy.bind(object), keyframeNumber)
 			}
 		}
 	}
@@ -1619,10 +1632,8 @@ class VideoEditorApp {
 		} else {
 			let handle = this.selection.draggingHandle.handle
 			// Move handle
-			let rect = this.element_preview.getBoundingClientRect()
-			let xFromCorner = mouseX - rect.left
-			let yFromCorner = mouseY - rect.top
-			handle.moveTo([xFromCorner, yFromCorner])
+			let targetPos = this.getRoundedViewportPosition(mouseX, mouseY)
+			handle.moveTo([targetPos.x, targetPos.y])
 			handle.object.setCurrentPropertiesToCalculatedPropertiesAtTime(this.currentTime) // <-- this will update `handle.object`'s direct properties (which will cause `updateHandlePositions` to give the correct handle positions) since `handle.moveTo` only updates the object's `config`
 		}
 		this.updateAllTimelineElements(false)

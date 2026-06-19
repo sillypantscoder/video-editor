@@ -980,7 +980,7 @@ class ObjectCustomEditorTab extends OptionsWindowTab {
 	refresh() {
 		this.changeContents(ObjectCustomEditorTab.getContents(this.object, this.app.currentTime, (t) => this.app.setCurrentTime(t), () => {
 			this.app.refreshTimelinePreviews(this.object)
-			this.app.updateViewportHandles()
+			this.app.updateViewportHandlesExistence()
 			this.app.refreshSelectionTabs()
 		}))
 	}
@@ -1064,19 +1064,31 @@ class ObjectPropertiesEditorTab extends OptionsWindowTab {
 	refresh() {
 		this.changeContents(ObjectPropertiesEditorTab.getContents(this.object, () => {
 			this.app.refreshTimelinePreviews(this.object)
-			this.app.updateViewportHandles()
+			this.app.updateViewportHandlesExistence()
+			this.app.refreshSelectionTabs()
+		}, () => {
+			this.app.updateAllTimelineElements(false)
+			this.app.refreshTimelinePreviews(this.object)
+			this.app.updateHandlePositions()
 			this.app.refreshSelectionTabs()
 		}))
 	}
 	/**
 	 * @param {VObject} object
-	 * @param {() => void} onObjectUpdated
+	 * @param {() => void} onObjectPropertiesUpdated
+	 * @param {() => void} onObjectTimingUpdated
 	 */
-	static getContents(object, onObjectUpdated) {
+	static getContents(object, onObjectPropertiesUpdated, onObjectTimingUpdated) {
 		var treeItems = [object.config.initialProperties, ...object.config.keyframes.map((v) => v.properties)].flatMap((v, i) => ({
-			text: `Keyframe ${i+1}`,
-			contents: [],
-			children: Options.propertyMap(onObjectUpdated, [...object.getPropertiesAtKeyframe(i - 1).keys()], v, i != 0, object.getPropertiesAtKeyframe(i - 1))
+			text: `Keyframe ${i+1} at time`,
+			contents: [
+				Options.number(null, () => object.config.keyframes[i-1]?.time ?? object.config.startTime, (v) => {
+					if (i == 0) object.config.startTime = v;
+					else object.config.keyframes[i-1].time = v;
+					onObjectTimingUpdated();
+				})
+			],
+			children: Options.propertyMap(onObjectPropertiesUpdated, [...object.getPropertiesAtKeyframe(i - 1).keys()], v, i != 0, object.getPropertiesAtKeyframe(i - 1))
 		}))
 		return [
 				Options.tree({
@@ -1700,7 +1712,7 @@ class VideoEditorApp {
 		var timelineNumberText = String(Math.round(this.currentTime * 100) / 100);
 		if (n.textContent != timelineNumberText) n.textContent = timelineNumberText
 		// Update selection handles
-		this.updateViewportHandles();
+		this.updateViewportHandlesExistence();
 		// Update selection-related tabs
 		this.refreshSelectionTabs()
 	}
@@ -1783,7 +1795,7 @@ class VideoEditorApp {
 				this.element_timeline.appendChild(keyframe_handle.element);
 			}
 			// Viewport handles
-			this.updateViewportHandles();
+			this.updateViewportHandlesExistence();
 		}
 		if (this.selection != null) this.timelineElements.get(this.selection.object)?.classList.add("selected")
 	}
@@ -1807,7 +1819,7 @@ class VideoEditorApp {
 			h.updateFromObject()
 		}
 	}
-	updateViewportHandles() {
+	updateViewportHandlesExistence() {
 		if (this.selection == null) return;
 		// Viewport Handles
 		let idx = this.selection.object.config.keyframes.findIndex((v) => v.time == this.currentTime);
@@ -1922,7 +1934,7 @@ class VideoEditorApp {
 			// Move handle
 			let targetTime = this.getRoundedTimelinePosition(mouseY)
 			handle.moveTo([targetTime])
-			this.updateViewportHandles()
+			this.updateViewportHandlesExistence()
 		} else {
 			let handle = this.selection.draggingHandle.handle
 			// Move handle

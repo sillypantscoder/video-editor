@@ -292,10 +292,11 @@ class CacheMap {
 	 * @returns {V}
 	 */
 	get(...params) {
-		var cachedValue = this.items.get(JSON.stringify(params))
+		var cacheKey = JSON.stringify(params.map((v) => v instanceof Blob ? Utils.hashBlobInstant(v) : v))
+		var cachedValue = this.items.get(cacheKey)
 		if (cachedValue != undefined) return cachedValue
 		var value = this.func(...params)
-		this.addCachedValue(JSON.stringify(params), value)
+		this.addCachedValue(cacheKey, value)
 		return value;
 	}
 }
@@ -1274,6 +1275,7 @@ class ObjectPropertiesEditorTab extends OptionsWindowTab {
 }
 
 class VObject {
+	timelineElementColor = "black"
 	/**
 	 * @param {number} startTime
 	 * @param {Map<string, ObjectProperty>} initialProperties
@@ -1290,6 +1292,8 @@ class VObject {
 				{ time: startTime + length, properties: new Map() }
 			]
 		}
+		/** @type {Promise<void>} */
+		this.fullyLoaded = new Promise((resolve) => resolve());
 	}
 	/** @returns {Promise<{ type: "map", value: Map<string, CustomJSONObject> }>} */
 	async save() {
@@ -1477,7 +1481,7 @@ class VObject {
 	/**
 	 * @param {number} screenWidth
 	 * @param {number} screenHeight
-	 * @returns {OffscreenCanvas}
+	 * @returns {{ canvas: OffscreenCanvas, fullyLoaded: boolean }}
 	 */
 	getVisualRepresentation(screenWidth, screenHeight) {
 		throw new Error("Cannot render a base object")
@@ -1515,6 +1519,7 @@ class VObject {
 	}
 }
 class VImage extends VObject {
+	timelineElementColor = "#D00"
 	/**
 	 * @param {Blob} imageBlob
 	 */
@@ -1534,8 +1539,12 @@ class VImage extends VObject {
 		// data
 		this.image = image
 		this.aspect_ratio = 1
-		createImageBitmap(imageBlob).then((bitmap) => {
+		this.fullyLoaded = createImageBitmap(imageBlob).then(async (bitmap) => {
 			this.aspect_ratio = bitmap.width / bitmap.height
+			// Wait until the object has finished rendering
+			while (this.renders.get(bitmap.width, bitmap.height, this.image.value).canvas == null) {
+				await new Promise((resolve) => requestAnimationFrame(resolve));
+			}
 		})
 		// properties
 		this.centerPos = centerPos
@@ -1587,12 +1596,14 @@ class VImage extends VObject {
 	/**
 	 * @param {number} screenWidth
 	 * @param {number} screenHeight
-	 * @returns {OffscreenCanvas}
+	 * @returns {{ canvas: OffscreenCanvas, fullyLoaded: boolean }}
 	 */
 	getVisualRepresentation(screenWidth, screenHeight) {
 		var expectedWidth = this.width.value * screenWidth
 		var expectedHeight = this.width.value * screenWidth / this.aspect_ratio
-		return this.renders.get(expectedWidth, expectedHeight, this.image.value).canvas ?? new OffscreenCanvas(expectedWidth, expectedHeight)
+		var canvas = this.renders.get(expectedWidth, expectedHeight, this.image.value).canvas
+		if (canvas == null) return { canvas: new OffscreenCanvas(expectedWidth, expectedHeight), fullyLoaded: false }
+		else return { canvas, fullyLoaded: true }
 	}
 	/**
 	 * @param {number} screenWidth
@@ -1600,7 +1611,7 @@ class VImage extends VObject {
 	 * @returns {{ x: number, y: number, width: number, height: number }}
 	 */
 	getPixelBoundingBox(screenWidth, screenHeight) {
-		var render = this.getVisualRepresentation(screenWidth, screenHeight);
+		var render = this.getVisualRepresentation(screenWidth, screenHeight).canvas;
 		var posX = (this.centerPos.x * screenWidth) - (render.width / 2)
 		var posY = (this.centerPos.y * screenHeight) - (render.height / 2)
 		return {
@@ -1616,7 +1627,7 @@ class VImage extends VObject {
 	 * @param {CanvasRenderingContext2D} canvas
 	 */
 	render(screenWidth, screenHeight, canvas) {
-		var render = this.getVisualRepresentation(screenWidth, screenHeight);
+		var render = this.getVisualRepresentation(screenWidth, screenHeight).canvas;
 		var posX = (this.centerPos.x * screenWidth) - (render.width / 2)
 		var posY = (this.centerPos.y * screenHeight) - (render.height / 2)
 		canvas.drawImage(render, Math.round(posX), Math.round(posY))
@@ -1656,6 +1667,7 @@ class VImage extends VObject {
 	}
 }
 class VText extends VObject {
+	timelineElementColor = "#0C0"
 	constructor() {
 		// - pos/size
 		var centerPos = new PositionProperty(0.5, 0.5)
@@ -1730,10 +1742,11 @@ class VText extends VObject {
 	/**
 	 * @param {number} screenWidth
 	 * @param {number} screenHeight
-	 * @returns {OffscreenCanvas}
+	 * @returns {{ canvas: OffscreenCanvas, fullyLoaded: boolean }}
 	 */
 	getVisualRepresentation(screenWidth, screenHeight) {
-		return this.renders.get(this.width.value * screenWidth, this.text.value, this.color.asobj(), this.textSize.value * screenWidth)
+		var canvas = this.renders.get(this.width.value * screenWidth, this.text.value, this.color.asobj(), this.textSize.value * screenWidth);
+		return { canvas, fullyLoaded: true }
 	}
 	/**
 	 * @param {number} screenWidth
@@ -1838,7 +1851,7 @@ class VideoEditorApp {
 			]),
 			Options.h("Create an object..."),
 			Options.buttons([
-				{ text: "Text", onclick: () => this.addObject(new VText(), new Map([
+				{ text: "Text", onclick: () => this.addFreshObject(new VText(), new Map([
 					["Text", new StringProperty(prompt("Enter the text to display:", "Text") ?? (() => {
 						throw new Error("Cancelled by user")
 					})())]
@@ -1961,15 +1974,18 @@ class VideoEditorApp {
 		}
 		// Refresh everything
 		this.updateTimelineTicks();
-		this.updateAllTimelineElements(true);
+		Promise.all(this.objects.map((v) => v.fullyLoaded)).then(() => {
+			this.updateAllTimelineElements(true);
+		})
 	}
 	/**
 	 * @param {VObject} object
 	 * @param {Map<string, ObjectProperty>} properties
 	 * @param {boolean} select
 	 */
-	addObject(object, properties, select) {
+	addFreshObject(object, properties, select) {
 		object.config.startTime = this.currentTime
+		object.config.keyframes[0].time += this.currentTime
 		for (var entry of properties) {
 			var existingProperty = object.config.initialProperties.get(entry[0])
 			if (existingProperty == undefined) throw new Error("Can't add object with property '" + entry[0] + "' as that property doesn't exist")
@@ -1980,13 +1996,15 @@ class VideoEditorApp {
 		// update everything
 		this.saveUndoState();
 		this.updateTimelineTicks();
-		this.updateAllTimelineElements(false);
-		if (select) {
-			this.setSelectedObject(object)
-		}
-		// add previews to timeline element
-		var timelineElement = this.timelineElements.get(object);
-		if (timelineElement != undefined) this.addPreviewToTimelineElement(object, timelineElement);
+		object.fullyLoaded.then(() => {
+			this.updateAllTimelineElements(false);
+			if (select) {
+				this.setSelectedObject(object)
+			}
+			// add previews to timeline element
+			var timelineElement = this.timelineElements.get(object);
+			if (timelineElement != undefined) this.addPreviewToTimelineElement(object, timelineElement);
+		})
 	}
 	async saveUndoState() {
 		this.redoStack = []
@@ -2051,7 +2069,7 @@ class VideoEditorApp {
 			}
 			var beginTime = o.config.startTime
 			var endTime = Math.max(...o.config.keyframes.map((v) => v.time))
-			e.setAttribute("style", `--startY: ${beginTime}; --endY: ${endTime}; --x: 0; --color: #0C0;`);
+			e.setAttribute("style", `--startY: ${beginTime}; --endY: ${endTime}; --x: 0; --color: ${o.timelineElementColor};`);
 			// Add previews
 			if (refreshPreviews) {
 				[...e.children].forEach((v) => v.remove())
@@ -2087,10 +2105,17 @@ class VideoEditorApp {
 		object.setCurrentPropertiesToCalculatedPropertiesAtTime(time)
 
 		var canvas = object.getVisualRepresentation(this.element_preview.width, this.element_preview.height)
-		canvas.getContext('2d')
+		if (canvas.fullyLoaded == false) {
+			// Delay previews until next frame
+			requestAnimationFrame(() => {
+				this.addPreviewToTimelineElement(object, timelineElement, startTime);
+			})
+			return;
+		}
+		canvas.canvas.getContext('2d')
 
 		// convert to blob URL
-		var blob = await canvas.convertToBlob({ type: 'image/png' });
+		var blob = await canvas.canvas.convertToBlob({ type: 'image/png' });
 		var imageUrl = URL.createObjectURL(blob);
 		// draw to image
 		var img = new Image();

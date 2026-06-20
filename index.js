@@ -62,11 +62,15 @@ class Utils {
 			if (e == undefined) {
 				return false;
 			} else {
-				callback(e);
+				if (e.checkVisibility()) callback(e);
 				return true;
 			}
 		})();
-		if (shouldContinue) requestAnimationFrame(() => this._whileElementConnectedCallback(element, callback))
+		if (shouldContinue) requestAnimationFrame(() => {
+			requestAnimationFrame(() => {
+				this._whileElementConnectedCallback(element, callback)
+			})
+		})
 	}
 	/**
 	 * @template {HTMLElement} T
@@ -565,6 +569,9 @@ class Handle {
 		this.pos = newPos
 		this.updatePos()
 	}
+	onDragFinish() {
+		this.app.saveUndoState()
+	}
 	updateFromObject() {
 		this.updatePos()
 	}
@@ -988,10 +995,12 @@ class ObjectCustomEditorTab extends OptionsWindowTab {
 	}
 	refresh() {
 		this.changeContents(ObjectCustomEditorTab.getContents(this.object, this.app.currentTime, (t) => this.app.setCurrentTime(t), () => {
+			this.app.saveUndoState();
 			this.app.refreshTimelinePreviews(this.object)
 			this.app.updateViewportHandlesExistence()
 			this.app.refreshSelectionTabs()
 		}, () => {
+			this.app.saveUndoState();
 			this.app.updateAllTimelineElements(false)
 			this.app.refreshTimelinePreviews(this.object)
 			this.app.updateHandlePositions()
@@ -1116,10 +1125,12 @@ class ObjectPropertiesEditorTab extends OptionsWindowTab {
 	}
 	refresh() {
 		this.changeContents(ObjectPropertiesEditorTab.getContents(this.object, () => {
+			this.app.saveUndoState();
 			this.app.refreshTimelinePreviews(this.object)
 			this.app.updateViewportHandlesExistence()
 			this.app.refreshSelectionTabs()
 		}, () => {
+			this.app.saveUndoState();
 			this.app.updateAllTimelineElements(false)
 			this.app.refreshTimelinePreviews(this.object)
 			this.app.updateHandlePositions()
@@ -1128,6 +1139,7 @@ class ObjectPropertiesEditorTab extends OptionsWindowTab {
 		}, () => {
 			this.app.setSelectedObject(null)
 			this.app.objects.splice(this.app.objects.indexOf(this.object), 1)
+			this.app.saveUndoState();
 			this.app.updateAllTimelineElements(false)
 		}))
 	}
@@ -1556,6 +1568,11 @@ class VideoEditorApp {
 		this.objects[0].config.keyframes[0].properties.set("Text Color", new ColorProperty(255, 0, 0, 255)) // TEST
 		/** @type {{ object: VObject, timelineHandles: Handle<[number]>[], viewportHandles: Handle<[number, number]>[], draggingHandle: { isTimeline: true, handle: Handle<[number]> } | { isTimeline: false, handle: Handle<[number, number]> } | null, objectEditorTab: ObjectCustomEditorTab, objectPropertiesTab: ObjectPropertiesEditorTab } | null} */
 		this.selection = null;
+		// undo/redo
+		/** @type {Map<string, CustomJSONObject>[]} */
+		this.undoStack = [this.save().value]
+		/** @type {Map<string, CustomJSONObject>[]} */
+		this.redoStack = []
 		// main tab
 		this.mainOptionsTab = new OptionsWindowTab("Scene", [
 			Options.number("Current time:", () => this.currentTime, (v) => this.setCurrentTime(v)),
@@ -1622,22 +1639,29 @@ class VideoEditorApp {
 	 * @param {ArrayBuffer | Uint8Array | Blob} zipData
 	 */
 	async import(zipData) {
-		// Remove previous data
-		this.setSelectedObject(null)
-		this.objects = [] // garbage collection let's go
 		// Load zip file
 		var zip = await JSZip.loadAsync(zipData)
 		var projectDataBlob = await zip.file("project.dat").async("string")
-		var data = CustomJSON.decode(projectDataBlob)
-		if (data.type != "map") throw new Error("Main project data must be a map")
+		this.load(CustomJSON.decode(projectDataBlob))
+		this.saveUndoState();
+	}
+	/**
+	 * @param {CustomJSONObject} projectData
+	 */
+	load(projectData) {
+		// Remove previous data
+		this.setSelectedObject(null)
+		this.objects = [] // garbage collection let's go
+		// Load data
+		if (projectData.type != "map") throw new Error("Main project data must be a map")
 		{
-			let aspect_ratio = data.value.get("aspect_ratio")
+			let aspect_ratio = projectData.value.get("aspect_ratio")
 			if (aspect_ratio == undefined) throw new Error("Main project data must contain aspect ratio")
 			if (aspect_ratio.type != "number") throw new Error("Aspect ratio must be a number")
 			this.video_aspect_ratio = aspect_ratio.value
 		}
 		{
-			let objects = data.value.get("objects")
+			let objects = projectData.value.get("objects")
 			if (objects == undefined) throw new Error("Main project data must contain object list")
 			if (objects.type != "list") throw new Error("Object list must be a list")
 			for (var objectData of objects.value) {
@@ -1664,6 +1688,7 @@ class VideoEditorApp {
 		// Add the object!
 		this.objects.push(object)
 		// update everything
+		this.saveUndoState();
 		this.updateTimelineTicks();
 		this.updateAllTimelineElements(false);
 		if (select) {
@@ -1672,6 +1697,21 @@ class VideoEditorApp {
 		// add previews to timeline element
 		var timelineElement = this.timelineElements.get(object);
 		if (timelineElement != undefined) this.addPreviewToTimelineElement(object, timelineElement);
+	}
+	saveUndoState() {
+		this.redoStack = []
+		this.undoStack.push(this.save().value)
+	}
+	undo() {
+		if (this.undoStack.length <= 1) return;
+		this.redoStack.push(this.undoStack.pop() ?? new Map())
+		this.load({ type: "map", value: this.undoStack[this.undoStack.length - 1] })
+	}
+	redo() {
+		var data = this.redoStack.pop()
+		if (data == undefined) return;
+		this.undoStack.push(data)
+		this.load({ type: "map", value: data })
 	}
 	/** @param {number} amount */
 	zoomTimeline(amount) {
@@ -2073,6 +2113,7 @@ class VideoEditorApp {
 	stopDraggingHandle() {
 		if (this.selection == null || this.selection.draggingHandle == null) return;
 		// De-select handle
+		this.selection.draggingHandle.handle.onDragFinish()
 		this.selection.draggingHandle.handle.element.classList.remove("active")
 		this.selection.draggingHandle = null
 	}

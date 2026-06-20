@@ -182,7 +182,7 @@ input[type="number"], input[type="text"] {
 }
 		</style>
 	</head>
-	<body>
+	<body onkeydown="if (event.ctrlKey) { if (event.key == 'z') { app.undo(); } else if (event.key == 'Z' || event.key == 'y') { app.redo(); } }">
 		<div id="timeline"
 			onscroll="app.onScroll()"
 			onwheel="if (event.ctrlKey) { event.preventDefault(); app.zoomTimeline(Math.pow(2, event.deltaY / -300)) }"

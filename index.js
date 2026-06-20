@@ -657,7 +657,7 @@ class Handle {
 		this.updatePos()
 	}
 }
-/** @extends {Handle<[number]>} */
+/** @extends {Handle<[number, number]>} */
 class InvisibleTimeHandle extends Handle {
 	/**
 	 * @param {VideoEditorApp} app
@@ -665,13 +665,14 @@ class InvisibleTimeHandle extends Handle {
 	 * @param {number} initialPos
 	 */
 	constructor(app, object, initialPos) {
-		super(app, object, [initialPos])
+		super(app, object, [initialPos, object.config.renderLayer])
 		this.timeOffset = initialPos - this.object.config.startTime
 	}
 	updatePos() {}
-	/** @param {[number]} newPos */
+	/** @param {[number, number]} newPos */
 	moveTo(newPos) {
 		newPos[0] = Math.max(newPos[0], this.timeOffset)
+		newPos[1] = Math.max(Math.floor(newPos[1]), 0)
 		// update pos
 		super.moveTo(newPos)
 		// set object start time
@@ -679,6 +680,8 @@ class InvisibleTimeHandle extends Handle {
 		this.object.config.startTime += delta
 		// set keyframe times
 		this.object.config.keyframes.forEach((v) => v.time += delta)
+		// set layer
+		this.object.config.renderLayer = this.pos[1]
 	}
 	updateFromObject() {}
 }
@@ -694,7 +697,7 @@ class KeyframeTimeHandle extends Handle {
 		this.keyframe_idx = keyframe_idx;
 	}
 	updatePos() {
-		this.element.setAttribute("style", `--y: ${this.pos[0]}; --x: 0;`)
+		this.element.setAttribute("style", `--y: ${this.pos[0]}; --x: ${this.object.config.renderLayer};`)
 	}
 	/** @param {[number]} newPos */
 	moveTo(newPos) {
@@ -1265,7 +1268,14 @@ class ObjectPropertiesEditorTab extends OptionsWindowTab {
 			Options.tree({
 				text: "All Object Properties",
 				contents: [],
-				children: treeItems
+				children: [
+					{
+						text: "Layer Number",
+						contents: [Options.number(null, () => object.config.renderLayer, (v) => object.config.renderLayer = Math.floor(v))],
+						children: []
+					},
+					...treeItems
+				]
 			}),
 			Options.buttons([
 				{ text: "Delete Object", onclick: deleteObject, color: "#F00" }
@@ -1284,8 +1294,9 @@ class VObject {
 	constructor(startTime, initialProperties, length) {
 		/** @type {Map<string, ObjectProperty>} */
 		this.properties = initialProperties
-		/** @type {{ startTime: number, initialProperties: Map<string, ObjectProperty>, keyframes: { time: number, properties: Map<string, ObjectProperty> }[] }} */
+		/** @type {{ renderLayer: number, startTime: number, initialProperties: Map<string, ObjectProperty>, keyframes: { time: number, properties: Map<string, ObjectProperty> }[] }} */
 		this.config = {
+			renderLayer: 0,
 			startTime,
 			initialProperties: Utils.copyPropertyMap(initialProperties),
 			keyframes: [
@@ -1298,6 +1309,7 @@ class VObject {
 	/** @returns {Promise<{ type: "map", value: Map<string, CustomJSONObject> }>} */
 	async save() {
 		return { type: "map", value: new Map([
+			["renderLayer", { type: "number", value: this.config.renderLayer }],
 			["startTime", { type: "number", value: this.config.startTime }],
 			["initialProperties", { type: "map", value: new Map(
 				await Promise.all(
@@ -1364,6 +1376,13 @@ class VObject {
 		if (objectType == "text") object = new VText()
 		else if (objectType == "image") object = new VImage(getBlob(dataMap.get("imageBlob")))
 		else throw new Error("Unknown object type: " + objectType)
+		// set object layer
+		{
+			let gotLayer = dataMap.get("renderLayer")
+			if (gotLayer == undefined) throw new Error("Object data must include rendering layer")
+			if (gotLayer.type != "number") throw new Error("Object rendering layer must be a number")
+			object.config.renderLayer = gotLayer.value;
+		}
 		// set object time
 		{
 			let gotStartTime = dataMap.get("startTime")
@@ -1834,7 +1853,7 @@ class VideoEditorApp {
 		this.objects[0].config.keyframes[0].time = 6 // TEST
 		this.objects[0].config.keyframes[0].properties.set("Center Position", new PositionProperty(0.9, 0.6)) // TEST
 		this.objects[0].config.keyframes[0].properties.set("Text Color", new ColorProperty(255, 0, 0, 255)) // TEST
-		/** @type {{ object: VObject, timelineHandles: Handle<[number]>[], viewportHandles: Handle<[number, number]>[], draggingHandle: { isTimeline: true, handle: Handle<[number]> } | { isTimeline: false, handle: Handle<[number, number]> } | null, objectEditorTab: ObjectCustomEditorTab, objectPropertiesTab: ObjectPropertiesEditorTab } | null} */
+		/** @type {{ object: VObject, timelineHandles: Handle<[number]>[], viewportHandles: Handle<[number, number]>[], draggingHandle: { isTimeline: true, handle: Handle<[number]> | InvisibleTimeHandle } | { isTimeline: false, handle: Handle<[number, number]> } | null, objectEditorTab: ObjectCustomEditorTab, objectPropertiesTab: ObjectPropertiesEditorTab } | null} */
 		this.selection = null;
 		// undo/redo
 		/** @type {{ blobs: Map<string, Blob>, data: Map<string, CustomJSONObject> }[]} */
@@ -2069,7 +2088,7 @@ class VideoEditorApp {
 			}
 			var beginTime = o.config.startTime
 			var endTime = Math.max(...o.config.keyframes.map((v) => v.time))
-			e.setAttribute("style", `--startY: ${beginTime}; --endY: ${endTime}; --x: 0; --color: ${o.timelineElementColor};`);
+			e.setAttribute("style", `--startY: ${beginTime}; --endY: ${endTime}; --x: ${o.config.renderLayer}; --color: ${o.timelineElementColor};`);
 			// Add previews
 			if (refreshPreviews) {
 				[...e.children].forEach((v) => v.remove())
@@ -2147,7 +2166,7 @@ class VideoEditorApp {
 	updateCanvas() {
 		this.preview_ctx.clearRect(0, 0, this.element_preview.width, this.element_preview.height)
 		// draw objects
-		for (var o of this.objects) {
+		for (var o of [...this.objects].sort((a, b) => a.config.renderLayer - b.config.renderLayer)) {
 			if (o.isVisibleAtTime(this.currentTime)) {
 				o.setCurrentPropertiesToCalculatedPropertiesAtTime(this.currentTime)
 				o.render(this.element_preview.width, this.element_preview.height, this.preview_ctx)
@@ -2324,14 +2343,14 @@ class VideoEditorApp {
 	canvasClicked(event) {
 		var x = event.clientX - this.element_preview.getBoundingClientRect().left
 		var y = event.clientY - this.element_preview.getBoundingClientRect().top
-		for (var i = this.objects.length - 1; i >= 0; i--) { // reverse for loop ehehehe
-			if (! this.objects[i].isVisibleAtTime(this.currentTime)) continue;
-			if (Utils.pointInsideRect({ x, y }, this.objects[i].getPixelBoundingBox(this.element_preview.width, this.element_preview.height))) {
+		for (var object of [...this.objects].sort((a, b) => a.config.renderLayer - b.config.renderLayer).reverse()) {
+			if (! object.isVisibleAtTime(this.currentTime)) continue;
+			if (Utils.pointInsideRect({ x, y }, object.getPixelBoundingBox(this.element_preview.width, this.element_preview.height))) {
 				// De-select current object or select this object
 				if (this.selection != null) {
-					if (this.selection.object != this.objects[i]) this.setSelectedObject(null);
+					if (this.selection.object != object) this.setSelectedObject(null);
 					else this.startDraggingInvisibleViewportHandleForObject(this.selection.object, { x: event.clientX, y: event.clientY });
-				} else this.setSelectedObject(this.objects[i]);
+				} else this.setSelectedObject(object);
 				return;
 			}
 		}
@@ -2414,7 +2433,13 @@ class VideoEditorApp {
 			let handle = this.selection.draggingHandle.handle
 			// Move handle
 			let targetTime = this.getRoundedTimelinePosition(mouseY)
-			handle.moveTo([targetTime])
+			if (handle instanceof InvisibleTimeHandle) {
+				let em = parseFloat(window.getComputedStyle(this.element_timeline).fontSize)
+				let targetX = (mouseX - (2*em)) / (3*em)
+				handle.moveTo([targetTime, targetX])
+			} else {
+				handle.moveTo([targetTime])
+			}
 			this.updateViewportHandlesExistence()
 		} else {
 			let handle = this.selection.draggingHandle.handle

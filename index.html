@@ -187,7 +187,7 @@ input[type="number"], input[type="text"] {
 			onscroll="app.onScroll()"
 			onwheel="if (event.ctrlKey) { event.preventDefault(); app.zoomTimeline(Math.pow(2, event.deltaY / -300)) }"
 			onmousedown="if (event.clientX > this.clientWidth) { /* clicked on scrollbar */ } else if (event.target.classList.contains('handle')) { app.startDraggingHandleFromElement(event.target, event.clientX, event.clientY); } else if (event.target.classList.contains('timeline-block')) { if (app.selection != null && event.target == app.timelineElements.get(app.selection.object)) { app.startDraggingInvisibleTimelineHandleForObject(app.selection.object, event.clientY) } else { app.selectObjectFromTimelineBlock(event.target) } } else { app.setCurrentTime(app.getRoundedTimelinePosition(event.clientY)) }"
-			onmousemove="if (app.selection?.draggingHandle != null) { app.moveDraggingHandle(0, event.clientY); }"
+			onmousemove="if (app.selection?.draggingHandle != null) { app.moveDraggingHandle(event.clientX, event.clientY); }"
 			onmouseup="if (app.selection?.draggingHandle != null) { app.stopDraggingHandle(); }"
 		></div>
 		<div id="main-panel">

@@ -12,6 +12,19 @@ class JSZip {
 		}
 	}
 	/**
+	 * @param {string} name
+	 * @returns {JSZip}
+	 */
+	folder(name) {
+		throw new Error()
+	}
+	/**
+	 * @param {(path: string, file: ZipObject) => void} callback
+	 */
+	forEach(callback) {
+		throw new Error()
+	}
+	/**
 	 * @param {{ type: "blob" }} options
 	 * @returns {Promise<Blob>}
 	 */

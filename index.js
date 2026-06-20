@@ -133,6 +133,45 @@ class Utils {
 		document.body.removeChild(a);
 		URL.revokeObjectURL(url);
 	}
+	/** @type {WeakMap<Blob, string>} */
+	static BLOB_HASHES = new WeakMap();
+	/**
+	 * @param {Blob} blob
+	 * @returns {Promise<string>}
+	 */
+	static async _hashBlob(blob) {
+		var arrayBuffer = await blob.arrayBuffer();
+		// Calculate the hash using Web Crypto API
+		var hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
+		// convert to hex string
+		var hashArray = [...new Uint8Array(hashBuffer)];
+		var hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+		return hashHex;
+	}
+	/**
+	 * @param {Blob} blob
+	 * @returns {Promise<string>}
+	 */
+	static async hashBlob(blob) {
+		var cachedValue = this.BLOB_HASHES.get(blob)
+		if (cachedValue != undefined) return cachedValue;
+		// Create new hash
+		var hash = await this._hashBlob(blob)
+		this.BLOB_HASHES.set(blob, hash);
+		return hash;
+	}
+	/**
+	 * @param {Blob} blob
+	 * @returns {string | undefined}
+	 */
+	static hashBlobInstant(blob) {
+		var cachedValue = this.BLOB_HASHES.get(blob)
+		if (cachedValue != undefined) return cachedValue;
+		else {
+			this.hashBlob(blob)
+			return undefined;
+		}
+	}
 }
 /**
  * @typedef {{ type: "number", value: number } | { type: "string", value: string } | { type: "boolean", value: boolean } | { type: "list", value: CustomJSONObject[] } | { type: "map", value: Map<string, CustomJSONObject> } | { type: "null" }} CustomJSONObject
@@ -267,8 +306,8 @@ class ObjectProperty {
 	copy() {
 		throw new Error("Cannot copy a base property")
 	}
-	/** @returns {CustomJSONObject} */
-	save() {
+	/** @returns {Promise<CustomJSONObject>} */
+	async save() {
 		throw new Error("Cannot convert a base property to JSON")
 	}
 	/**
@@ -321,8 +360,8 @@ class NumericProperty extends ObjectProperty {
 	copy() {
 		return new NumericProperty(this.value)
 	}
-	/** @returns {CustomJSONObject} */
-	save() {
+	/** @returns {Promise<CustomJSONObject>} */
+	async save() {
 		return { type: "number", value: this.value }
 	}
 	/** @param {ObjectProperty} property */
@@ -370,8 +409,8 @@ class PositionProperty extends ObjectProperty {
 	copy() {
 		return new PositionProperty(this.x, this.y)
 	}
-	/** @returns {CustomJSONObject} */
-	save() {
+	/** @returns {Promise<CustomJSONObject>} */
+	async save() {
 		return { type: "map", value: new Map([
 			["x", { type: "number", value: this.x }],
 			["y", { type: "number", value: this.y }]
@@ -443,8 +482,8 @@ class ColorProperty extends ObjectProperty {
 	copy() {
 		return new ColorProperty(this.r, this.g, this.b, this.a)
 	}
-	/** @returns {CustomJSONObject} */
-	save() {
+	/** @returns {Promise<CustomJSONObject>} */
+	async save() {
 		return { type: "map", value: new Map([
 			["r", { type: "number", value: this.r }],
 			["g", { type: "number", value: this.g }],
@@ -516,15 +555,15 @@ class StringProperty extends ObjectProperty {
 	copy() {
 		return new StringProperty(this.value)
 	}
-	/** @returns {CustomJSONObject} */
-	save() {
+	/** @returns {Promise<CustomJSONObject>} */
+	async save() {
 		return { type: "string", value: this.value }
 	}
 	/** @param {ObjectProperty} property */
 	setFrom(property) {
 		if (property instanceof StringProperty) {
 			this.value = property.value
-		} else throw new Error("Cannot set NumericProperty to a differently-typed property")
+		} else throw new Error("Cannot set StringProperty to a differently-typed property")
 	}
 	/**
 	 * @param {number} time
@@ -543,6 +582,47 @@ class StringProperty extends ObjectProperty {
 	 */
 	makeElements(update) {
 		var e = Options.string(null, () => this.value, (v) => { this.value = v; update(); })
+		return { contents: [e], children: [] }
+	}
+}
+class BlobProperty extends ObjectProperty {
+	/** @param {Blob} value */
+	constructor(value) {
+		super()
+		/** @type {Blob} */
+		this.value = value
+		Utils.hashBlob(this.value)
+	}
+	/** @returns {BlobProperty} */
+	copy() {
+		return new BlobProperty(this.value)
+	}
+	/** @returns {Promise<CustomJSONObject>} */
+	async save() {
+		return { type: "map", value: new Map([
+			["blobHash", { type: "string", value: await Utils.hashBlob(this.value) }]
+		]) }
+	}
+	/** @param {ObjectProperty} property */
+	setFrom(property) {
+		if (property instanceof BlobProperty) {
+			this.value = property.value
+		} else throw new Error("Cannot set NumericProperty to a differently-typed property")
+	}
+	/**
+	 * @param {number} time
+	 * @param {ObjectProperty} endpoint
+	 * @returns {BlobProperty}
+	 */
+	interpolate(time, endpoint) {
+		throw new Error("Cannot interpolate a BlobProperty")
+	}
+	/**
+	 * @param {() => void} update
+	 * @returns {{ contents: HTMLElement[], children: OptionsTreeNode[]}}
+	 */
+	makeElements(update) {
+		var e = Options.string(null, () => Utils.hashBlobInstant(this.value) ?? "Error", (v) => { throw new Error(); })
 		return { contents: [e], children: [] }
 	}
 }
@@ -1211,28 +1291,45 @@ class VObject {
 			]
 		}
 	}
-	/** @returns {{ type: "map", value: Map<string, CustomJSONObject> }} */
-	save() {
+	/** @returns {Promise<{ type: "map", value: Map<string, CustomJSONObject> }>} */
+	async save() {
 		return { type: "map", value: new Map([
 			["startTime", { type: "number", value: this.config.startTime }],
 			["initialProperties", { type: "map", value: new Map(
-				[...this.config.initialProperties].map((v) => [v[0], v[1].save()])
+				await Promise.all(
+					[...this.config.initialProperties].map(
+						/** @returns {Promise<[string, CustomJSONObject]>} */
+						async (v) => [v[0], await v[1].save()]
+					)
+				)
 			) }],
 			["keyframes", { type: "list", value:
-				this.config.keyframes.map((v) => ({ type: "map", value: new Map([
-					["time", { type: "number", value: v.time }],
-					["properties", { type: "map", value: new Map(
-						[...v.properties].map((v) => [v[0], v[1].save()])
-					) }]
-				]) }))
+				await Promise.all(
+					this.config.keyframes.map(async (v) => ({ type: "map", value: new Map([
+						["time", { type: "number", value: v.time }],
+						["properties", { type: "map", value: new Map(
+							await Promise.all(
+								[...v.properties].map(
+									/** @returns {Promise<[string, CustomJSONObject]>} */
+									async (v) => [v[0], await v[1].save()]
+								)
+							)
+						) }]
+					]) }))
+				)
 			}]
 		]) }
 	}
+	/** @returns {Blob[]} */
+	getAllBlobs() {
+		return []
+	}
 	/**
 	 * @param {CustomJSONObject} data
+	 * @param {Map<string, Blob>} blobs
 	 * @returns {VObject}
 	 */
-	static load(data) {
+	static load(data, blobs) {
 		if (data.type != "map") throw new Error("Object data must be a map")
 		var dataMap = data.value
 		// get object type
@@ -1242,16 +1339,34 @@ class VObject {
 			if (gotObjectType.type != "string") throw new Error("Object type must be a string")
 			var objectType = gotObjectType.value;
 		}
-		// get object type
+		// blob getter
+		/**
+		 * @param {CustomJSONObject | undefined} data
+		 * @returns {Blob}
+		 */
+		function getBlob(data) {
+			if (data == undefined) throw new Error("Object of type " + objectType + " requires a blob!")
+			if (data.type != "map") throw new Error("Blob hash container must be a map")
+			var hash = data.value.get("blobHash")
+			if (hash == undefined) throw new Error("Blob hash container must contain blob hash")
+			if (hash.type != "string") throw new Error("Blob hash must be a string")
+			var gotBlob = blobs.get(hash.value)
+			if (gotBlob == undefined) throw new Error("Blob with hash " + hash.value + " is missing!")
+			return gotBlob
+		}
+		// construct object
+		/** @type {VObject} */
+		var object;
+		if (objectType == "text") object = new VText()
+		else if (objectType == "image") object = new VImage(getBlob(dataMap.get("imageBlob")))
+		else throw new Error("Unknown object type: " + objectType)
+		// set object time
 		{
 			let gotStartTime = dataMap.get("startTime")
 			if (gotStartTime == undefined) throw new Error("Object data must include object start time")
 			if (gotStartTime.type != "number") throw new Error("Object start time must be a number")
-			var startTime = gotStartTime.value;
+			object.config.startTime = gotStartTime.value;
 		}
-		// construct object
-		if (objectType == "text") var object = new VText(startTime)
-		else throw new Error("Unknown object type: " + objectType)
 		// set initial properties
 		{
 			let gotInitialProperties = dataMap.get("initialProperties")
@@ -1399,11 +1514,149 @@ class VObject {
 		throw new Error("Cannot move a base object")
 	}
 }
-class VText extends VObject {
+class VImage extends VObject {
 	/**
-	 * @param {number} startTime
+	 * @param {Blob} imageBlob
 	 */
-	constructor(startTime) {
+	constructor(imageBlob) {
+		// - pos/size
+		var centerPos = new PositionProperty(0.5, 0.5)
+		var width = new NumericProperty(0.15)
+		// - blob
+		var image = new BlobProperty(imageBlob)
+		// create!
+		/** @type {[string, ObjectProperty][]} */
+		var properties = [
+			["Center Position", centerPos],
+			["Width", width]
+		]
+		super(0, new Map(properties), 5)
+		// data
+		this.image = image
+		this.aspect_ratio = 1
+		createImageBitmap(imageBlob).then((bitmap) => {
+			this.aspect_ratio = bitmap.width / bitmap.height
+		})
+		// properties
+		this.centerPos = centerPos
+		this.width = width
+		// rendering cache
+		/** @type {CacheMap<[number, number, Blob], { canvas: null | OffscreenCanvas }>} */
+		this.renders = new CacheMap(VImage.createRender, 30)
+	}
+	/** @returns {Promise<{ type: "map", value: Map<string, CustomJSONObject> }>} */
+	async save() {
+		return { type: "map", value: new Map([
+			["type", { type: "string", value: "image" }],
+			["imageBlob", await this.image.save()],
+			...(await super.save()).value
+		]) }
+	}
+	/** @returns {Blob[]} */
+	getAllBlobs() {
+		return [this.image.value]
+	}
+	/**
+	 * @param {number} width
+	 * @param {number} height
+	 * @param {Blob} blob
+	 * @returns {{ canvas: null | OffscreenCanvas }}
+	 */
+	static createRender(width, height, blob) {
+		/** @type {{ canvas: null | OffscreenCanvas }} */
+		var result = { canvas: null }
+		// Load image asynchronously and update the cached render when ready
+		createImageBitmap(blob).then((bitmap) => {
+			// make width and height
+			var targetWidth = Math.max(1, Math.round(width))
+			var targetHeight = Math.max(1, Math.round(height))
+			// create canvas
+			var canvas = new OffscreenCanvas(targetWidth, targetHeight)
+			var ctx = canvas.getContext('2d')
+			if (ctx == null) throw new Error("can't render image because context is null")
+			// draw image
+			ctx.drawImage(bitmap, 0, 0, targetWidth, targetHeight)
+			// save
+			result.canvas = canvas
+			bitmap.close()
+		}).catch((error) => {
+			console.error("Failed to create image render:", error)
+		})
+		return result
+	}
+	/**
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
+	 * @returns {OffscreenCanvas}
+	 */
+	getVisualRepresentation(screenWidth, screenHeight) {
+		var expectedWidth = this.width.value * screenWidth
+		var expectedHeight = this.width.value * screenWidth / this.aspect_ratio
+		return this.renders.get(expectedWidth, expectedHeight, this.image.value).canvas ?? new OffscreenCanvas(expectedWidth, expectedHeight)
+	}
+	/**
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
+	 * @returns {{ x: number, y: number, width: number, height: number }}
+	 */
+	getPixelBoundingBox(screenWidth, screenHeight) {
+		var render = this.getVisualRepresentation(screenWidth, screenHeight);
+		var posX = (this.centerPos.x * screenWidth) - (render.width / 2)
+		var posY = (this.centerPos.y * screenHeight) - (render.height / 2)
+		return {
+			x: posX,
+			y: posY,
+			width: render.width,
+			height: render.height
+		}
+	}
+	/**
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
+	 * @param {CanvasRenderingContext2D} canvas
+	 */
+	render(screenWidth, screenHeight, canvas) {
+		var render = this.getVisualRepresentation(screenWidth, screenHeight);
+		var posX = (this.centerPos.x * screenWidth) - (render.width / 2)
+		var posY = (this.centerPos.y * screenHeight) - (render.height / 2)
+		canvas.drawImage(render, Math.round(posX), Math.round(posY))
+	}
+	/**
+	 * @param {number} keyframe_number
+	 * @param {VideoEditorApp} app
+	 * @returns {Handle<[number, number]>[]}
+	 */
+	getViewportHandles(keyframe_number, app) {
+		return [
+			new ObjectRescaleHandle(app, this, { x: -1, y: -1 }, this.moveBy.bind(this), this.rescaleBy.bind(this), keyframe_number),
+			new ObjectRescaleHandle(app, this, { x: 1, y: -1 }, this.moveBy.bind(this), this.rescaleBy.bind(this), keyframe_number),
+			new ObjectRescaleHandle(app, this, { x: -1, y: 1 }, this.moveBy.bind(this), this.rescaleBy.bind(this), keyframe_number),
+			new ObjectRescaleHandle(app, this, { x: 1, y: 1 }, this.moveBy.bind(this), this.rescaleBy.bind(this), keyframe_number)
+		]
+	}
+	/**
+	 * @param {{ x: number, y: number }} delta
+	 * @param {number} keyframe_number
+	 */
+	moveBy(delta, keyframe_number) {
+		// Set Center Position
+		var configuredPosition = this.requireProperty("Center Position", PositionProperty, keyframe_number)
+		configuredPosition.x += delta.x;
+		configuredPosition.y += delta.y;
+	}
+	/**
+	 * @param {number} delta
+	 * @param {number} keyframe_number
+	 */
+	rescaleBy(delta, keyframe_number) {
+		if (delta <= 0 || this.width.value * delta < 0.001) return;
+		// Set Width
+		var configuredWidth = this.requireProperty("Width", NumericProperty, keyframe_number)
+		configuredWidth.value = Utils.roundToSignificantDigitsBinary(configuredWidth.value * delta, 8);
+	}
+}
+class VText extends VObject {
+	constructor() {
 		// - pos/size
 		var centerPos = new PositionProperty(0.5, 0.5)
 		var width = new NumericProperty(0.15)
@@ -1420,7 +1673,7 @@ class VText extends VObject {
 			["Text Color", color],
 			["Text Size", textSize]
 		]
-		super(startTime, new Map(properties), 5)
+		super(0, new Map(properties), 5)
 		// properties
 		this.centerPos = centerPos
 		this.width = width
@@ -1431,11 +1684,11 @@ class VText extends VObject {
 		/** @type {CacheMap<[number, string, { r: number, g: number, b: number, a: number }, number], OffscreenCanvas>} */
 		this.renders = new CacheMap(VText.createRender, 10)
 	}
-	/** @returns {{ type: "map", value: Map<string, CustomJSONObject> }} */
-	save() {
+	/** @returns {Promise<{ type: "map", value: Map<string, CustomJSONObject> }>} */
+	async save() {
 		return { type: "map", value: new Map([
 			["type", { type: "string", value: "text" }],
-			...super.save().value
+			...(await super.save()).value
 		]) }
 	}
 	/**
@@ -1563,15 +1816,18 @@ class VideoEditorApp {
 		this.currentTime = 0;
 		/** @type {VObject[]} */
 		this.objects = [];
-		this.objects.push(new VText(1)); // TEST
+		this.objects.push(new VText()); // TEST
+		this.objects[0].config.startTime = 1 // TEST
+		this.objects[0].config.keyframes[0].time = 6 // TEST
 		this.objects[0].config.keyframes[0].properties.set("Center Position", new PositionProperty(0.9, 0.6)) // TEST
 		this.objects[0].config.keyframes[0].properties.set("Text Color", new ColorProperty(255, 0, 0, 255)) // TEST
 		/** @type {{ object: VObject, timelineHandles: Handle<[number]>[], viewportHandles: Handle<[number, number]>[], draggingHandle: { isTimeline: true, handle: Handle<[number]> } | { isTimeline: false, handle: Handle<[number, number]> } | null, objectEditorTab: ObjectCustomEditorTab, objectPropertiesTab: ObjectPropertiesEditorTab } | null} */
 		this.selection = null;
 		// undo/redo
-		/** @type {Map<string, CustomJSONObject>[]} */
-		this.undoStack = [this.save().value]
-		/** @type {Map<string, CustomJSONObject>[]} */
+		/** @type {{ blobs: Map<string, Blob>, data: Map<string, CustomJSONObject> }[]} */
+		this.undoStack = []
+		this.save().then((v) => this.undoStack.push(v))
+		/** @type {{ blobs: Map<string, Blob>, data: Map<string, CustomJSONObject> }[]} */
 		this.redoStack = []
 		// main tab
 		this.mainOptionsTab = new OptionsWindowTab("Scene", [
@@ -1582,7 +1838,7 @@ class VideoEditorApp {
 			]),
 			Options.h("Create an object..."),
 			Options.buttons([
-				{ text: "Text", onclick: () => this.addObject(VText, new Map([
+				{ text: "Text", onclick: () => this.addObject(new VText(), new Map([
 					["Text", new StringProperty(prompt("Enter the text to display:", "Text") ?? (() => {
 						throw new Error("Cancelled by user")
 					})())]
@@ -1605,19 +1861,40 @@ class VideoEditorApp {
 		this.updateTimelineTicks();
 		this.updateAllTimelineElements(true);
 	}
-	/** @returns {{ type: "map", value: Map<string, CustomJSONObject> }} */
-	save() {
-		return { type: "map", value: new Map([
+	/**
+	 * @param {VObject[]} objectList
+	 */
+	static async getAllBlobs(objectList) {
+		var blobs = objectList.flatMap((v) => v.getAllBlobs())
+		/** @type {Map<string, Blob>} */
+		var blobMap = new Map()
+		for (var blob of blobs) {
+			var hash = await Utils.hashBlob(blob)
+			blobMap.set(hash, blob)
+		}
+		return blobMap
+	}
+	/** @returns {Promise<{ blobs: Map<string, Blob>, data: Map<string, CustomJSONObject> }>} */
+	async save() {
+		return { blobs: await VideoEditorApp.getAllBlobs(this.objects), data: new Map([
 			["aspect_ratio", { type: "number", value: this.video_aspect_ratio }],
-			["objects", { type: "list", value: this.objects.map((v) => v.save()) }]
+			["objects", { type: "list", value: await Promise.all(this.objects.map((v) => v.save())) }]
 		]) }
 	}
-	export() {
+	async export() {
 		// Save file
-		var data = CustomJSON.encode(this.save())
+		var allSaveData = await this.save();
+		var mainData = CustomJSON.encode({ type: "map", value: allSaveData.data })
 		// Zip
 		var zip = new JSZip();
-		zip.file("project.dat", data)
+		zip.file("project.dat", mainData);
+		var blobFolder = zip.folder("blobs")
+		for (var blob of allSaveData.blobs) {
+			blobFolder.file(blob[0] + "." + ({
+				"image/png": "png",
+				"image/jpeg": "jpeg"
+			}[blob[1].type] ?? "dat"), blob[1]);
+		}
 		zip.generateAsync({ type: "blob" }).then((blob) => {
 			Utils.downloadBlob(blob, "project.zip")
 		})
@@ -1641,14 +1918,27 @@ class VideoEditorApp {
 	async import(zipData) {
 		// Load zip file
 		var zip = await JSZip.loadAsync(zipData)
-		var projectDataBlob = await zip.file("project.dat").async("string")
-		this.load(CustomJSON.decode(projectDataBlob))
+		var projectData = await zip.file("project.dat").async("string")
+		/** @type {Map<string, Blob>} */
+		var loadedBlobs = new Map()
+		for (var file of (() => {
+			/** @type {ZipObject[]} */
+			var blobFiles = [];
+			zip.folder("blobs").forEach((path, file) => blobFiles.push(file));
+			return blobFiles;
+		})()) {
+			var hash = file.name.split("/")[1].split(".")[0]
+			var blob = await file.async("blob")
+			loadedBlobs.set(hash, blob)
+		}
+		this.load(CustomJSON.decode(projectData), loadedBlobs)
 		this.saveUndoState();
 	}
 	/**
 	 * @param {CustomJSONObject} projectData
+	 * @param {Map<string, Blob>} blobs
 	 */
-	load(projectData) {
+	load(projectData, blobs) {
 		// Remove previous data
 		this.setSelectedObject(null)
 		this.objects = [] // garbage collection let's go
@@ -1665,7 +1955,7 @@ class VideoEditorApp {
 			if (objects == undefined) throw new Error("Main project data must contain object list")
 			if (objects.type != "list") throw new Error("Object list must be a list")
 			for (var objectData of objects.value) {
-				var constructedObject = VObject.load(objectData)
+				var constructedObject = VObject.load(objectData, blobs)
 				this.objects.push(constructedObject)
 			}
 		}
@@ -1674,12 +1964,12 @@ class VideoEditorApp {
 		this.updateAllTimelineElements(true);
 	}
 	/**
-	 * @param {new (startTime: number) => VObject} objClass
+	 * @param {VObject} object
 	 * @param {Map<string, ObjectProperty>} properties
 	 * @param {boolean} select
 	 */
-	addObject(objClass, properties, select) {
-		var object = new objClass(this.currentTime)
+	addObject(object, properties, select) {
+		object.config.startTime = this.currentTime
 		for (var entry of properties) {
 			var existingProperty = object.config.initialProperties.get(entry[0])
 			if (existingProperty == undefined) throw new Error("Can't add object with property '" + entry[0] + "' as that property doesn't exist")
@@ -1698,20 +1988,21 @@ class VideoEditorApp {
 		var timelineElement = this.timelineElements.get(object);
 		if (timelineElement != undefined) this.addPreviewToTimelineElement(object, timelineElement);
 	}
-	saveUndoState() {
+	async saveUndoState() {
 		this.redoStack = []
-		this.undoStack.push(this.save().value)
+		this.undoStack.push(await this.save())
 	}
 	undo() {
 		if (this.undoStack.length <= 1) return;
-		this.redoStack.push(this.undoStack.pop() ?? new Map())
-		this.load({ type: "map", value: this.undoStack[this.undoStack.length - 1] })
+		this.redoStack.push(this.undoStack.pop() ?? { blobs: new Map(), data: new Map() })
+		var lastUndoStackItem = this.undoStack[this.undoStack.length - 1];
+		this.load({ type: "map", value: lastUndoStackItem.data }, lastUndoStackItem.blobs)
 	}
 	redo() {
 		var data = this.redoStack.pop()
 		if (data == undefined) return;
 		this.undoStack.push(data)
-		this.load({ type: "map", value: data })
+		this.load({ type: "map", value: data.data }, data.blobs)
 	}
 	/** @param {number} amount */
 	zoomTimeline(amount) {
@@ -1796,6 +2087,7 @@ class VideoEditorApp {
 		object.setCurrentPropertiesToCalculatedPropertiesAtTime(time)
 
 		var canvas = object.getVisualRepresentation(this.element_preview.width, this.element_preview.height)
+		canvas.getContext('2d')
 
 		// convert to blob URL
 		var blob = await canvas.convertToBlob({ type: 'image/png' });
@@ -2121,3 +2413,19 @@ class VideoEditorApp {
 
 var app = new VideoEditorApp()
 app.frameLoop()
+
+{
+	let c = new OffscreenCanvas(15, 10)
+	let ctx = c.getContext('2d')
+	if (ctx == null) throw new Error()
+	ctx.fillStyle = "orange"
+	ctx.fillRect(0, 0, 10, 10)
+	ctx.fillStyle = "red"
+	ctx.fillRect(0, 0, 5, 5)
+	ctx.fillStyle = "yellow"
+	ctx.fillRect(5, 5, 5, 5)
+	ctx.fillRect(10, 0, 5, 5)
+	ctx.fillStyle = "white"
+	ctx.fillRect(10, 5, 5, 5)
+	c.convertToBlob().then((v) => console.log(v))
+}

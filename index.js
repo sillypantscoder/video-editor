@@ -2319,18 +2319,40 @@ class VideoEditorApp {
 			h.updateFromObject()
 		}
 	}
+	/**
+	 * @param {VObject} object
+	 */
+	getCurrentKeyframeNumberForObjectDragging(object) {
+		var keyframeNumber = null;
+		for (var i = -1; i < object.config.keyframes.length; i++) {
+			var keyframeTime = object.config.keyframes[i]?.time ?? object.config.startTime
+			if (this.currentTime == keyframeTime) {
+				keyframeNumber = i;
+				break;
+			}
+			if (this.currentTime < keyframeTime) {
+				if (i == -1) break;
+				// Check whether we can move 2 keyframes simultaneously
+				let properties = object.config.keyframes[i].properties;
+				if (! (properties.has("Center Position") || properties.has("Width"))) {
+					keyframeNumber = i - 0.5;
+					break;
+				}
+			}
+		}
+		return keyframeNumber;
+	}
 	updateViewportHandlesExistence() {
 		if (this.selection == null) return;
 		// Viewport Handles
-		let idx = this.selection.object.config.keyframes.findIndex((v) => v.time == this.currentTime);
-		var keyframeNumber = this.selection.object.config.startTime == this.currentTime ? -1 : (idx == -1 ? null : idx);
+		var keyframeNumber = this.getCurrentKeyframeNumberForObjectDragging(this.selection.object);
 		// Remove old handles
 		[...this.selection.viewportHandles].forEach((v) => v.element.remove())
 		this.selection.viewportHandles = []
 		// Add handles
 		if (keyframeNumber != null) {
 			this.selection.object.setCurrentPropertiesToCalculatedPropertiesAtTime(this.currentTime)
-			this.selection.viewportHandles = [...this.selection.object.getViewportHandles(keyframeNumber, this)]
+			this.selection.viewportHandles = [...this.selection.object.getViewportHandles(Math.floor(keyframeNumber), this)]
 			this.selection.viewportHandles.forEach((v) => this.element_preview.parentNode?.appendChild(v.element))
 		}
 	}
@@ -2413,13 +2435,12 @@ class VideoEditorApp {
 		if (this.selection == null || this.selection.draggingHandle != null) return;
 		var mousePos = this.getRoundedViewportPosition(pixelMousePos.x, pixelMousePos.y)
 		// Find keyframe number
-		let idx = this.selection.object.config.keyframes.findIndex((v) => v.time == this.currentTime);
-		var keyframeNumber = this.selection.object.config.startTime == this.currentTime ? -1 : (idx == -1 ? null : idx);
+		var keyframeNumber = this.getCurrentKeyframeNumberForObjectDragging(this.selection.object);
 		if (keyframeNumber != null) {
 			// Select viewport handle
 			this.selection.draggingHandle = {
 				isTimeline: false,
-				handle: new InvisibleObjectMoveHandle(this, object, mousePos, object.moveBy.bind(object), keyframeNumber)
+				handle: new InvisibleObjectMoveHandle(this, object, mousePos, object.moveBy.bind(object), Math.floor(keyframeNumber))
 			}
 		}
 	}

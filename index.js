@@ -1379,7 +1379,10 @@ class VObject {
 				{ time: startTime + length, properties: new Map() }
 			]
 		}
-		/** @type {Promise<void>} */
+		/**
+		 * Resolves when the object's data is loaded, and the object is ready to render. This does NOT guarantee that any given render will be fully loaded.
+		 * @type {Promise<void>}
+		 */
 		this.fullyLoaded = new Promise((resolve) => resolve());
 	}
 	/** @returns {Promise<{ type: "map", value: Map<string, CustomJSONObject> }>} */
@@ -1506,9 +1509,7 @@ class VObject {
 		var maxTime = this.config.keyframes[this.config.keyframes.length - 1].time
 		return time <= maxTime;
 	}
-	/**
-	 * @param {number} keyframe_number
-	 */
+	/** @param {number} keyframe_number */
 	getPropertiesAtKeyframe(keyframe_number) {
 		return Utils.collapsePropertyMaps([
 			this.config.initialProperties,
@@ -1945,8 +1946,8 @@ class VVideo extends VObject {
 		this.width = width
 		this.time = time
 		// rendering cache
-		/** @type {{ width: number, height: number, time: number, canvas: OffscreenCanvas } | null} */
-		this.currentRender = null
+		/** @type {{ width: number, height: number, time: number, canvas: OffscreenCanvas }[]} */
+		this.renders = []
 		this.isRenderInProgress = false
 	}
 	/** @returns {Promise<{ type: "map", value: Map<string, CustomJSONObject> }>} */
@@ -1969,8 +1970,8 @@ class VVideo extends VObject {
 	 * @returns {Promise<OffscreenCanvas>}
 	 */
 	static async createRender(width, aspect_ratio, time, videoElement) {
-		videoElement.currentTime = time
 		// Load image asynchronously and update the cached render when ready
+		videoElement.currentTime = time
 		while (videoElement.readyState < 2) {
 			await new Promise((resolve) => requestAnimationFrame(resolve));
 		}
@@ -1995,15 +1996,32 @@ class VVideo extends VObject {
 		var expectedWidth = this.width.value * screenWidth
 		var expectedHeight = this.width.value * screenWidth / this.aspect_ratio
 		var currentTime = this.time.value
-		if ((! this.isRenderInProgress) && !(this.currentRender?.width == expectedWidth && this.currentRender.height == expectedHeight && this.currentRender.time == currentTime)) {
-			this.isRenderInProgress = true
-			this.fullyLoaded.then(() => VVideo.createRender(expectedWidth, this.aspect_ratio, this.time.value, this.videoElement)).then((v) => {
-				this.currentRender = { width: expectedWidth, height: expectedHeight, time: currentTime, canvas: v }
-				this.isRenderInProgress = false
-			})
+		// Find an existing canvas
+		var canvas = this.renders.find((v) => v.width == expectedWidth && v.height == expectedHeight && v.time == currentTime)?.canvas
+		var fullyLoaded = canvas != undefined
+		if (canvas == undefined) {
+			// Attempt to generate a new render
+			if (! this.isRenderInProgress) {
+				this.isRenderInProgress = true
+				this.fullyLoaded.then(() => VVideo.createRender(expectedWidth, this.aspect_ratio, this.time.value, this.videoElement)).then((v) => {
+					// Save the new render!
+					this.renders.push({ width: expectedWidth, height: expectedHeight, time: currentTime, canvas: v })
+					if (this.renders.length > 10) this.renders.shift()
+					this.isRenderInProgress = false
+				})
+			}
+			// Use another render of the same size instead...?
+			canvas = this.renders.find((v) => v.width == expectedWidth && v.height == expectedHeight)?.canvas
+			if (canvas == undefined) {
+				// Use the latest render instead...?
+				canvas = this.renders.at(-1)?.canvas
+				if (canvas == undefined) {
+					// Fallback: blank image
+					canvas = new OffscreenCanvas(expectedWidth, expectedHeight)
+				}
+			}
 		}
-		if (this.currentRender == null) return { canvas: new OffscreenCanvas(expectedWidth, expectedHeight), fullyLoaded: false }
-		else return { canvas: this.currentRender.canvas, fullyLoaded: true }
+		return { canvas, fullyLoaded }
 	}
 	/**
 	 * @param {number} screenWidth

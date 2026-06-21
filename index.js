@@ -183,7 +183,7 @@ class CustomJSON {
 	 */
 	static encode(object) {
 		if (object.type == "number") {
-			var str = object.value.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 20 });
+			var str = object.value.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 10 });
 			return "#" + str;
 		} else if (object.type == "string") {
 			return "\"" + object.value.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"").replaceAll(";", "\\;");
@@ -351,15 +351,26 @@ class ObjectProperty {
 	}
 }
 class NumericProperty extends ObjectProperty {
-	/** @param {number} value */
-	constructor(value) {
+	/**
+	 * @param {number} value
+	 * @param {number | undefined} [min]
+	 * @param {number | undefined} [max]
+	 * @param {number | undefined} [step]
+	 */
+	constructor(value, min, max, step) {
 		super()
 		/** @type {number} */
 		this.value = value
+		/** @type {number} */
+		this.min = min ?? 0
+		/** @type {number} */
+		this.max = max ?? 1
+		/** @type {number} */
+		this.step = step ?? 0.001
 	}
 	/** @returns {NumericProperty} */
 	copy() {
-		return new NumericProperty(this.value)
+		return new NumericProperty(this.value, this.min, this.max, this.step)
 	}
 	/** @returns {Promise<CustomJSONObject>} */
 	async save() {
@@ -387,10 +398,10 @@ class NumericProperty extends ObjectProperty {
 	 * @returns {{ contents: HTMLElement[], children: OptionsTreeNode[]}}
 	 */
 	makeElements(update) {
-		var e = Options.number(null, () => this.value, (v) => { this.value = v; update(); })
-		e.setAttribute("min", "0")
-		e.setAttribute("step", "0.001")
-		e.setAttribute("max", "1")
+		var e = Options.number(null, () => this.value.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 3 }), (v) => { this.value = v; update(); })
+		e.setAttribute("min", this.min.toString())
+		e.setAttribute("step", this.step.toString())
+		e.setAttribute("max", this.max.toString())
 		return { contents: [e], children: [] }
 	}
 }
@@ -441,8 +452,10 @@ class PositionProperty extends ObjectProperty {
 	 * @returns {{ contents: HTMLElement[], children: OptionsTreeNode[]}}
 	 */
 	makeElements(update) {
-		var x = Options.number(null, () => this.x, (v) => { this.x = v; update(); }); x.setAttribute("min", "0"); x.setAttribute("step", "0.01"); x.setAttribute("max", "1");
-		var y = Options.number(null, () => this.y, (v) => { this.y = v; update(); }); y.setAttribute("min", "0"); y.setAttribute("step", "0.01"); y.setAttribute("max", "1");
+		var x = Options.number(null, () => this.x.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 3 }), (v) => { this.x = v; update(); });
+		x.setAttribute("min", "0"); x.setAttribute("step", "0.01"); x.setAttribute("max", "1");
+		var y = Options.number(null, () => this.y.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 3 }), (v) => { this.y = v; update(); });
+		y.setAttribute("min", "0"); y.setAttribute("step", "0.01"); y.setAttribute("max", "1");
 		return { contents: [], children: [
 			{
 				text: "X:",
@@ -520,10 +533,14 @@ class ColorProperty extends ObjectProperty {
 	 * @returns {{ contents: HTMLElement[], children: OptionsTreeNode[]}}
 	 */
 	makeElements(update) {
-		var r = Options.number(null, () => this.r, (v) => { this.r = v; update(); }); r.setAttribute("min", "0"); r.setAttribute("step", "1"); r.setAttribute("max", "255");
-		var g = Options.number(null, () => this.g, (v) => { this.g = v; update(); }); g.setAttribute("min", "0"); g.setAttribute("step", "1"); g.setAttribute("max", "255");
-		var b = Options.number(null, () => this.b, (v) => { this.b = v; update(); }); b.setAttribute("min", "0"); b.setAttribute("step", "1"); b.setAttribute("max", "255");
-		var a = Options.number(null, () => this.a, (v) => { this.a = v; update(); }); a.setAttribute("min", "0"); a.setAttribute("step", "1"); a.setAttribute("max", "255");
+		var r = Options.number(null, () => this.r.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 3 }), (v) => { this.r = v; update(); });
+		r.setAttribute("min", "0"); r.setAttribute("step", "1"); r.setAttribute("max", "255");
+		var g = Options.number(null, () => this.g.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 3 }), (v) => { this.g = v; update(); });
+		g.setAttribute("min", "0"); g.setAttribute("step", "1"); g.setAttribute("max", "255");
+		var b = Options.number(null, () => this.b.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 3 }), (v) => { this.b = v; update(); });
+		b.setAttribute("min", "0"); b.setAttribute("step", "1"); b.setAttribute("max", "255");
+		var a = Options.number(null, () => this.a.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 3 }), (v) => { this.a = v; update(); });
+		a.setAttribute("min", "0"); a.setAttribute("step", "1"); a.setAttribute("max", "255");
 		return { contents: [], children: [
 			{
 				text: "R",
@@ -863,7 +880,7 @@ class Options {
 	}
 	/**
 	 * @param {string | null} text
-	 * @param {() => number} getter
+	 * @param {() => number | string} getter
 	 * @param {(value: number) => void} setter
 	 * @returns {HTMLElement}
 	 */
@@ -880,7 +897,6 @@ class Options {
 		}
 		e.setAttribute("type", "number")
 		e.setAttribute("style", `margin-left: 0.5em;`)
-		e.valueAsNumber = getter()
 		e.addEventListener("keydown", (event) => {
 			if (event.key == "Enter") {
 				// @ts-ignore
@@ -899,7 +915,10 @@ class Options {
 				} else {
 					// set value from getter
 					var gotValue = getter()
-					if (_e.valueAsNumber != gotValue) _e.valueAsNumber = gotValue
+					if (Math.abs(_e.valueAsNumber - Number(gotValue)) > 0.00001) {
+						if (typeof gotValue == "string") _e.value = gotValue
+						else _e.valueAsNumber = gotValue
+					}
 				}
 			}
 		})
@@ -1880,7 +1899,7 @@ class VideoEditorApp {
 		this.mainOptionsTab.show()
 		this.mainOptionsTab.focus()
 		// timeline tracking
-		this.timelinePixelsPerSecond = 50;
+		this.timelinePixelsPerSecond = 100;
 		/** @type {Map<VObject, HTMLElement>} */
 		this.timelineElements = new Map();
 		// initialize dom
@@ -1909,7 +1928,7 @@ class VideoEditorApp {
 	/** @returns {Promise<{ blobs: Map<string, Blob>, data: Map<string, CustomJSONObject> }>} */
 	async save() {
 		return { blobs: await VideoEditorApp.getAllBlobs(this.objects), data: new Map([
-			["aspect_ratio", { type: "number", value: this.video_aspect_ratio }],
+			["aspect_ratio", { type: "number", value: Math.round(this.video_aspect_ratio * 999) }],
 			["objects", { type: "list", value: await Promise.all(this.objects.map((v) => v.save())) }]
 		]) }
 	}
@@ -1980,7 +1999,13 @@ class VideoEditorApp {
 			let aspect_ratio = projectData.value.get("aspect_ratio")
 			if (aspect_ratio == undefined) throw new Error("Main project data must contain aspect ratio")
 			if (aspect_ratio.type != "number") throw new Error("Aspect ratio must be a number")
-			this.video_aspect_ratio = aspect_ratio.value
+			this.video_aspect_ratio = aspect_ratio.value / 999
+			// Update aspect ratio
+			this.element_preview.height = Math.round(Math.min(
+				window.innerHeight / 2,
+				(window.innerWidth * 2/3) / this.video_aspect_ratio
+			))
+			this.element_preview.width = Math.round(this.video_aspect_ratio * this.element_preview.height)
 		}
 		{
 			let objects = projectData.value.get("objects")

@@ -1907,6 +1907,166 @@ class VText extends VObject {
 		configuredTextSize.value *= delta;
 	}
 }
+class VVideo extends VObject {
+	timelineElementColor = "#F50"
+	/**
+	 * @param {Blob} videoBlob
+	 */
+	constructor(videoBlob) {
+		// - pos/size
+		var centerPos = new PositionProperty(0.5, 0.5)
+		var width = new NumericProperty(0.15)
+		// - video
+		var video = new BlobProperty(videoBlob)
+		var time = new NumericProperty(0)
+		// create!
+		/** @type {[string, ObjectProperty][]} */
+		var properties = [
+			["Center Position", centerPos],
+			["Width", width],
+			["Video Time", time]
+		]
+		super(0, new Map(properties), 5)
+		// data
+		this.video = video
+		this.videoElement = document.createElement("video");
+		this.videoElement.src = URL.createObjectURL(videoBlob);
+		this.videoElement.load();
+		this.aspect_ratio = 1
+		this.fullyLoaded = (async () => {
+			while (this.videoElement.readyState < 2) {
+				await new Promise((resolve) => requestAnimationFrame(resolve));
+			}
+			this.aspect_ratio = this.videoElement.videoWidth / this.videoElement.videoHeight
+			console.log("fully loaded")
+		})()
+		// properties
+		this.centerPos = centerPos
+		this.width = width
+		this.time = time
+		// rendering cache
+		/** @type {{ width: number, height: number, time: number, canvas: OffscreenCanvas } | null} */
+		this.currentRender = null
+		this.isRenderInProgress = false
+	}
+	/** @returns {Promise<{ type: "map", value: Map<string, CustomJSONObject> }>} */
+	async save() {
+		return { type: "map", value: new Map([
+			["type", { type: "string", value: "video" }],
+			["videoBlob", await this.video.save()],
+			...(await super.save()).value
+		]) }
+	}
+	/** @returns {Blob[]} */
+	getAllBlobs() {
+		return [this.video.value]
+	}
+	/**
+	 * @param {number} width
+	 * @param {number} aspect_ratio
+	 * @param {number} time
+	 * @param {HTMLVideoElement} videoElement
+	 * @returns {Promise<OffscreenCanvas>}
+	 */
+	static async createRender(width, aspect_ratio, time, videoElement) {
+		videoElement.currentTime = time
+		// Load image asynchronously and update the cached render when ready
+		while (videoElement.readyState < 2) {
+			await new Promise((resolve) => requestAnimationFrame(resolve));
+		}
+		// make width and height
+		var targetWidth = Math.max(1, Math.round(width))
+		var targetHeight = Math.max(1, Math.round(width / aspect_ratio))
+		// create canvas
+		var canvas = new OffscreenCanvas(targetWidth, targetHeight)
+		var ctx = canvas.getContext('2d')
+		if (ctx == null) throw new Error("can't render image because context is null")
+		// draw image
+		ctx.drawImage(videoElement, 0, 0, targetWidth, targetHeight)
+		// save
+		return canvas
+	}
+	/**
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
+	 * @returns {{ canvas: OffscreenCanvas, fullyLoaded: boolean }}
+	 */
+	getVisualRepresentation(screenWidth, screenHeight) {
+		var expectedWidth = this.width.value * screenWidth
+		var expectedHeight = this.width.value * screenWidth / this.aspect_ratio
+		var currentTime = this.time.value
+		if ((! this.isRenderInProgress) && !(this.currentRender?.width == expectedWidth && this.currentRender.height == expectedHeight && this.currentRender.time == currentTime)) {
+			this.isRenderInProgress = true
+			this.fullyLoaded.then(() => VVideo.createRender(expectedWidth, this.aspect_ratio, this.time.value, this.videoElement)).then((v) => {
+				this.currentRender = { width: expectedWidth, height: expectedHeight, time: currentTime, canvas: v }
+				this.isRenderInProgress = false
+			})
+		}
+		if (this.currentRender == null) return { canvas: new OffscreenCanvas(expectedWidth, expectedHeight), fullyLoaded: false }
+		else return { canvas: this.currentRender.canvas, fullyLoaded: true }
+	}
+	/**
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
+	 * @returns {{ x: number, y: number, width: number, height: number }}
+	 */
+	getPixelBoundingBox(screenWidth, screenHeight) {
+		var width = this.width.value * screenWidth
+		var height = width / this.aspect_ratio
+		var posX = (this.centerPos.x * screenWidth) - (width / 2)
+		var posY = (this.centerPos.y * screenHeight) - (height / 2)
+		return {
+			x: posX,
+			y: posY,
+			width: width,
+			height: height
+		}
+	}
+	/**
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
+	 * @param {CanvasRenderingContext2D} canvas
+	 */
+	render(screenWidth, screenHeight, canvas) {
+		var render = this.getVisualRepresentation(screenWidth, screenHeight).canvas;
+		var posX = (this.centerPos.x * screenWidth) - (render.width / 2)
+		var posY = (this.centerPos.y * screenHeight) - (render.height / 2)
+		canvas.drawImage(render, Math.round(posX), Math.round(posY))
+	}
+	/**
+	 * @param {number} keyframe_number
+	 * @param {VideoEditorApp} app
+	 * @returns {Handle<[number, number]>[]}
+	 */
+	getViewportHandles(keyframe_number, app) {
+		return [
+			new ObjectRescaleHandle(app, this, { x: -1, y: -1 }, this.moveBy.bind(this), this.rescaleBy.bind(this), keyframe_number),
+			new ObjectRescaleHandle(app, this, { x: 1, y: -1 }, this.moveBy.bind(this), this.rescaleBy.bind(this), keyframe_number),
+			new ObjectRescaleHandle(app, this, { x: -1, y: 1 }, this.moveBy.bind(this), this.rescaleBy.bind(this), keyframe_number),
+			new ObjectRescaleHandle(app, this, { x: 1, y: 1 }, this.moveBy.bind(this), this.rescaleBy.bind(this), keyframe_number)
+		]
+	}
+	/**
+	 * @param {{ x: number, y: number }} delta
+	 * @param {number} keyframe_number
+	 */
+	moveBy(delta, keyframe_number) {
+		// Set Center Position
+		var configuredPosition = this.requireProperty("Center Position", PositionProperty, keyframe_number)
+		configuredPosition.x += delta.x;
+		configuredPosition.y += delta.y;
+	}
+	/**
+	 * @param {number} delta
+	 * @param {number} keyframe_number
+	 */
+	rescaleBy(delta, keyframe_number) {
+		if (delta <= 0 || this.width.value * delta < 0.001) return;
+		// Set Width
+		var configuredWidth = this.requireProperty("Width", NumericProperty, keyframe_number)
+		configuredWidth.value = Utils.roundToSignificantDigitsBinary(configuredWidth.value * delta, 8);
+	}
+}
 
 class VideoEditorApp {
 	constructor() {
@@ -2150,25 +2310,34 @@ class VideoEditorApp {
 					if (mimeType.startsWith("image/")) {
 						var blob = await obj.getType(mimeType)
 						this.insertFile(blob, "image")
+					} else if (mimeType.startsWith("video/")) {
+						var blob = await obj.getType(mimeType)
+						this.insertFile(blob, "video")
 					}
 				}
 			}
 			if (obj instanceof DataTransferItem) {
 				// If it's a DataTransferItem:
-				if (obj.kind == "file" && obj.type.startsWith("image/")) {
+				if (obj.kind != "file") continue;
+				if (obj.type.startsWith("image/")) {
 					var file = obj.getAsFile()
 					if (file != null) this.insertFile(file, "image")
+				} else if (obj.type.startsWith("video/")) {
+					var file = obj.getAsFile()
+					if (file != null) this.insertFile(file, "video")
 				}
 			}
 		}
 	}
 	/**
 	 * @param {Blob} blob
-	 * @param {"image"} mode
+	 * @param {"image" | "video"} mode
 	 */
 	insertFile(blob, mode) {
 		if (mode == "image") {
 			this.addFreshObject(new VImage(blob), new Map(), true)
+		} else if (mode == "video") {
+			this.addFreshObject(new VVideo(blob), new Map(), true)
 		}
 	}
 	/** @param {number} amount */
@@ -2254,12 +2423,10 @@ class VideoEditorApp {
 		object.setCurrentPropertiesToCalculatedPropertiesAtTime(time)
 
 		var canvas = object.getVisualRepresentation(this.element_preview.width, this.element_preview.height)
-		if (canvas.fullyLoaded == false) {
+		while (canvas.fullyLoaded == false) {
 			// Delay previews until next frame
-			requestAnimationFrame(() => {
-				this.addPreviewToTimelineElement(object, timelineElement, startTime);
-			})
-			return;
+			await new Promise((resolve) => requestAnimationFrame(resolve))
+			canvas = object.getVisualRepresentation(this.element_preview.width, this.element_preview.height)
 		}
 		canvas.canvas.getContext('2d')
 

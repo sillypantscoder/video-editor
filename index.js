@@ -21,16 +21,26 @@ class Utils {
 		return newMap;
 	}
 	/**
-	 * @param {Map<string, ObjectProperty>[]} maps
+	 * @param {{ time: number, properties: Map<string, ObjectProperty> }[]} maps
 	 * @returns {Map<string, ObjectProperty>}
 	 */
 	static collapsePropertyMaps(maps) {
 		/** @type {Map<string, ObjectProperty>} */
 		var newMap = new Map();
+		/** @type {Map<AutoincrementingTimeProperty, number>} */
+		var incProperties = new Map();
 		for (var map of maps) {
-			for (var [key, value] of map) {
-				newMap.set(key, value.copy())
+			for (var [key, value] of map.properties) {
+				var newValue = value.copy()
+				newMap.set(key, newValue)
+				if (newValue instanceof AutoincrementingTimeProperty) {
+					// Record the time this property was set
+					incProperties.set(newValue, map.time)
+				}
 			}
+		}
+		for (var [property, time] of incProperties) {
+			property.value += maps[maps.length - 1].time - time
 		}
 		return newMap;
 	}
@@ -345,6 +355,8 @@ class ObjectProperty {
 			var b = data.value.get("b")
 			var a = data.value.get("a")
 			if (r != undefined && g != undefined && b != undefined && a != undefined && r.type == "number" && g.type == "number" && b.type == "number" && a.type == "number") return new ColorProperty(r.value, g.value, b.value, a.value)
+			var time = data.value.get("time")
+			if (time != undefined && time.type == "number") return new AutoincrementingTimeProperty(time.value)
 		}
 		throw new Error("Invalid saved property data")
 	}
@@ -419,6 +431,56 @@ class NumericProperty extends ObjectProperty {
 		var e = Options.number(null, () => this.value.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 3 }), (v) => { this.value = v; update(); })
 		e.setAttribute("min", this.min.toString())
 		e.setAttribute("step", this.step.toString())
+		e.setAttribute("max", this.max.toString())
+		return { contents: [e], children: [] }
+	}
+}
+class AutoincrementingTimeProperty extends ObjectProperty {
+	/**
+	 * @param {number} value
+	 * @param {number | undefined} [max]
+	 */
+	constructor(value, max) {
+		super()
+		/** @type {number} */
+		this.value = value
+		this.max = max ?? Infinity;
+	}
+	/** @returns {AutoincrementingTimeProperty} */
+	copy() {
+		return new AutoincrementingTimeProperty(this.value, this.max);
+	}
+	/** @returns {Promise<CustomJSONObject>} */
+	async save() {
+		return { type: "map", value: new Map([
+			["time", { type: "number", value: this.value }]
+		]) }
+	}
+	/** @param {ObjectProperty} property */
+	setFrom(property) {
+		if (property instanceof AutoincrementingTimeProperty) {
+			this.value = property.value
+		} else throw new Error("Cannot set AutoincrementingTimeProperty to a differently-typed property")
+	}
+	/**
+	 * @param {number} time
+	 * @param {ObjectProperty} endpoint
+	 * @returns {AutoincrementingTimeProperty}
+	 */
+	interpolate(time, endpoint) {
+		if (endpoint instanceof AutoincrementingTimeProperty) {
+			var value = ((1-time) * this.value) + (time * endpoint.value)
+			return new AutoincrementingTimeProperty(value)
+		} else throw new Error("Cannot interpolate AutoincrementingTimeProperty with a differently-typed property")
+	}
+	/**
+	 * @param {() => void} update
+	 * @returns {{ contents: HTMLElement[], children: OptionsTreeNode[]}}
+	 */
+	makeElements(update) {
+		var e = Options.number(null, () => this.value.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 5 }), (v) => { this.value = v; update(); })
+		e.setAttribute("min", "0")
+		e.setAttribute("step", "0.001")
 		e.setAttribute("max", this.max.toString())
 		return { contents: [e], children: [] }
 	}
@@ -1454,6 +1516,7 @@ class VObject {
 		var object;
 		if (objectType == "text") object = new VText()
 		else if (objectType == "image") object = new VImage(getBlob(dataMap.get("imageBlob")))
+		else if (objectType == "video") object = new VVideo(getBlob(dataMap.get("videoBlob")))
 		else throw new Error("Unknown object type: " + objectType)
 		// set object layer
 		{
@@ -1512,8 +1575,8 @@ class VObject {
 	/** @param {number} keyframe_number */
 	getPropertiesAtKeyframe(keyframe_number) {
 		return Utils.collapsePropertyMaps([
-			this.config.initialProperties,
-			...this.config.keyframes.slice(0, keyframe_number + 1).map((v) => v.properties)
+			{ time: this.config.startTime, properties: this.config.initialProperties },
+			...this.config.keyframes.slice(0, keyframe_number + 1)
 		])
 	}
 	/**
@@ -1615,7 +1678,7 @@ class VObject {
 	}
 }
 class VImage extends VObject {
-	timelineElementColor = "#D00"
+	timelineElementColor = "#B00"
 	/**
 	 * @param {Blob} imageBlob
 	 */
@@ -1919,7 +1982,7 @@ class VVideo extends VObject {
 		var width = new NumericProperty(0.15)
 		// - video
 		var video = new BlobProperty(videoBlob)
-		var time = new NumericProperty(0)
+		var time = new AutoincrementingTimeProperty(0)
 		// create!
 		/** @type {[string, ObjectProperty][]} */
 		var properties = [
@@ -1935,11 +1998,19 @@ class VVideo extends VObject {
 		this.videoElement.load();
 		this.aspect_ratio = 1
 		this.fullyLoaded = (async () => {
+			await new Promise((resolve) => requestAnimationFrame(resolve));
 			while (this.videoElement.readyState < 2) {
 				await new Promise((resolve) => requestAnimationFrame(resolve));
 			}
 			this.aspect_ratio = this.videoElement.videoWidth / this.videoElement.videoHeight
-			console.log("fully loaded")
+			this.time.max = this.videoElement.duration
+			for (var p of [
+				this.config.initialProperties,
+				...this.config.keyframes.map((v) => v.properties)
+			]) {
+				var timeValue = p.get("Video Time")
+				if (timeValue != undefined && timeValue instanceof AutoincrementingTimeProperty) timeValue.max = this.time.max
+			}
 		})()
 		// properties
 		this.centerPos = centerPos
@@ -2006,20 +2077,21 @@ class VVideo extends VObject {
 				this.fullyLoaded.then(() => VVideo.createRender(expectedWidth, this.aspect_ratio, this.time.value, this.videoElement)).then((v) => {
 					// Save the new render!
 					this.renders.push({ width: expectedWidth, height: expectedHeight, time: currentTime, canvas: v })
-					if (this.renders.length > 10) this.renders.shift()
+					if (this.renders.length > 40) this.renders.shift()
 					this.isRenderInProgress = false
 				})
 			}
 			// Use another render of the same size instead...?
-			canvas = this.renders.find((v) => v.width == expectedWidth && v.height == expectedHeight)?.canvas
+			var renders_sortedByClosestTime = [...this.renders].reverse().sort((a, b) => Math.abs(a.time - currentTime) - Math.abs(b.time - currentTime))
+			canvas = renders_sortedByClosestTime.find((v) => v.width == expectedWidth && v.height == expectedHeight)?.canvas
 			if (canvas == undefined) {
-				// Use the latest render instead...?
-				canvas = this.renders.at(-1)?.canvas
+				// Use the render with the closest time instead...?
+				canvas = renders_sortedByClosestTime.at(0)?.canvas
 				if (canvas == undefined) {
 					// Fallback: blank image
 					canvas = new OffscreenCanvas(expectedWidth, expectedHeight)
 				}
-			}
+			} else if ((renders_sortedByClosestTime.find((v) => v.width == expectedWidth && v.height == expectedHeight)?.time ?? -Infinity) - currentTime < 0.3) fullyLoaded = true; // avoid lag by not delaying preview generation
 		}
 		return { canvas, fullyLoaded }
 	}
@@ -2367,7 +2439,7 @@ class VideoEditorApp {
 	}
 	getNumberOfTimelineTicks() {
 		var maxSeconds = Math.max(...this.objects.flatMap((v) => [v.config.startTime, ...v.config.keyframes.map((w) => w.time)]))
-		var maxPixels = (maxSeconds * this.timelinePixelsPerSecond) + (window.innerHeight * 2/3)
+		var maxPixels = (maxSeconds * this.timelinePixelsPerSecond) + window.innerHeight
 		return maxPixels / this.timelinePixelsPerSecond;
 	}
 	updateTimelineTicks() {
@@ -2412,6 +2484,7 @@ class VideoEditorApp {
 				this.addPreviewToTimelineElement(o, e);
 			}
 		}
+		this.updateTimelineTicks()
 	}
 	/**
 	 * @param {VObject} object

@@ -1993,17 +1993,23 @@ class VVideo extends VObject {
 		super(0, new Map(properties), 5)
 		// data
 		this.video = video
-		this.videoElement = document.createElement("video");
-		this.videoElement.src = URL.createObjectURL(videoBlob);
-		this.videoElement.load();
 		this.aspect_ratio = 1
+		this.videoElement1 = document.createElement("video");
+		this.videoElement1.src = URL.createObjectURL(videoBlob);
+		this.videoElement1.load();
+		this.videoElement1_InUse = false;
+		this.videoElement2 = document.createElement("video");
+		this.videoElement2.src = URL.createObjectURL(videoBlob);
+		this.videoElement2.load();
+		this.videoElement2_InUse = false;
 		this.fullyLoaded = (async () => {
 			await new Promise((resolve) => requestAnimationFrame(resolve));
-			while (this.videoElement.readyState < 2) {
+			while (this.videoElement1.readyState < 2 || this.videoElement2.readyState < 2) {
 				await new Promise((resolve) => requestAnimationFrame(resolve));
 			}
-			this.aspect_ratio = this.videoElement.videoWidth / this.videoElement.videoHeight
-			this.time.max = this.videoElement.duration
+			this.aspect_ratio = this.videoElement1.videoWidth / this.videoElement1.videoHeight
+			this.time.max = this.videoElement1.duration
+			// Set maximum time value on all keyframes
 			for (var p of [
 				this.config.initialProperties,
 				...this.config.keyframes.map((v) => v.properties)
@@ -2019,7 +2025,6 @@ class VVideo extends VObject {
 		// rendering cache
 		/** @type {{ width: number, height: number, time: number, canvas: OffscreenCanvas }[]} */
 		this.renders = []
-		this.isRenderInProgress = false
 	}
 	/** @returns {Promise<{ type: "map", value: Map<string, CustomJSONObject> }>} */
 	async save() {
@@ -2059,27 +2064,42 @@ class VVideo extends VObject {
 		return canvas
 	}
 	/**
+	 * @param {number} expectedWidth
+	 * @param {1 | 2} videoElement
+	 */
+	async requestRender(expectedWidth, videoElement) {
+		// Setup
+		if (videoElement == 1) this.videoElement1_InUse = true
+		if (videoElement == 2) this.videoElement2_InUse = true
+		var currentTime = this.time.value;
+		await this.fullyLoaded;
+		// Create render
+		var canvas = await VVideo.createRender(expectedWidth, this.aspect_ratio, currentTime, this.videoElement1)
+		// Save the new render!
+		this.renders.push({ width: canvas.width, height: canvas.height, time: currentTime, canvas })
+		if (this.renders.length > 40) this.renders.shift()
+		// Cleanup
+		if (videoElement == 1) this.videoElement1_InUse = false
+		if (videoElement == 2) this.videoElement2_InUse = false
+	}
+	/**
 	 * @param {number} screenWidth
 	 * @param {number} screenHeight
 	 * @returns {{ canvas: OffscreenCanvas, fullyLoaded: boolean }}
 	 */
 	getVisualRepresentation(screenWidth, screenHeight) {
-		var expectedWidth = this.width.value * screenWidth
-		var expectedHeight = this.width.value * screenWidth / this.aspect_ratio
+		var expectedWidth = Math.round(this.width.value * screenWidth)
+		var expectedHeight = Math.round(this.width.value * screenWidth / this.aspect_ratio)
 		var currentTime = this.time.value
 		// Find an existing canvas
 		var canvas = this.renders.find((v) => v.width == expectedWidth && v.height == expectedHeight && v.time == currentTime)?.canvas
 		var fullyLoaded = canvas != undefined
 		if (canvas == undefined) {
 			// Attempt to generate a new render
-			if (! this.isRenderInProgress) {
-				this.isRenderInProgress = true
-				this.fullyLoaded.then(() => VVideo.createRender(expectedWidth, this.aspect_ratio, this.time.value, this.videoElement)).then((v) => {
-					// Save the new render!
-					this.renders.push({ width: expectedWidth, height: expectedHeight, time: currentTime, canvas: v })
-					if (this.renders.length > 40) this.renders.shift()
-					this.isRenderInProgress = false
-				})
+			if (! this.videoElement1_InUse) {
+				this.requestRender(expectedWidth, 1)
+			} else if (! this.videoElement2_InUse) {
+				this.requestRender(expectedWidth, 2)
 			}
 			// Use another render of the same size instead...?
 			var renders_sortedByClosestTime = [...this.renders].reverse().sort((a, b) => Math.abs(a.time - currentTime) - Math.abs(b.time - currentTime))

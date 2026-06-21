@@ -82,6 +82,29 @@ button {
 		}
 	}
 }
+button.custom-color-picker {
+	--color-picker-color: black;
+	--normal-background-color: var(--color-picker-color);
+	--highlight-background-color: var(--color-picker-color);
+	--clicked-background-color: color-mix(in srgb,  var(--color-picker-color) 20%, var(--background-color) 80%);
+	--clicked-outline-color: var(--color-picker-color);
+	&:not(.accent-button):not(:hover):not(:active)::before {
+		outline: 2px solid gray;
+	}
+	&:not(.accent-button):hover:not(:active)::before {
+		outline: 2px solid white;
+	}
+	width: 2em;
+	height: 2em;
+	& > input {
+		position: absolute;
+		top: 0;
+		left: 0;
+		width: 100%;
+		height: 100%;
+		opacity: 0;
+	}
+}
 button:has( > input[type=checkbox]:first-child) {
 	/* color config */
 		/* normal colors when unchecked */

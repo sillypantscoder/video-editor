@@ -35,6 +35,24 @@ class Utils {
 		return newMap;
 	}
 	/**
+	 * @param {string} hex
+	 * @returns {{ r: number, g: number, b: number }}
+	 */
+	static colorHexToRGB(hex) {
+		return {
+			r: parseInt(hex.substring(1, 3), 16),
+			g: parseInt(hex.substring(3, 5), 16),
+			b: parseInt(hex.substring(5, 7), 16)
+		};
+	}
+	/**
+	 * @param {{ r: number, g: number, b: number }} rgb
+	 * @returns {string}
+	 */
+	static colorRGBToHex(rgb) {
+		return "#" + rgb.r.toString(16).padStart(2, '0') + rgb.g.toString(16).padStart(2, '0') + rgb.b.toString(16).padStart(2, '0');
+	}
+	/**
 	 * @param {{ x: number, y: number }} point
 	 * @param {{ x: number, y: number, width: number, height: number }} rect
 	 */
@@ -541,7 +559,13 @@ class ColorProperty extends ObjectProperty {
 		b.setAttribute("min", "0"); b.setAttribute("step", "1"); b.setAttribute("max", "255");
 		var a = Options.number(null, () => this.a.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 3 }), (v) => { this.a = v; update(); });
 		a.setAttribute("min", "0"); a.setAttribute("step", "1"); a.setAttribute("max", "255");
-		return { contents: [], children: [
+		return { contents: [
+			Options.color(() => this.asobj(), (v) => {
+				this.r = v.r
+				this.g = v.g
+				this.b = v.b
+			})
+		], children: [
 			{
 				text: "R",
 				contents: [r],
@@ -972,6 +996,34 @@ class Options {
 			}
 		})
 		return c
+	}
+	/**
+	 * @param {() => { r: number, g: number, b: number }} getter
+	 * @param {(value: { r: number, g: number, b: number }) => void} setter
+	 * @returns {HTMLElement}
+	 */
+	static color(getter, setter) {
+		var e = document.createElement("button")
+		e.classList.add("custom-color-picker")
+		var previousColor = ""
+		Utils.whileElementConnectedCallback(e, (_e) => {
+			var gotValue = Utils.colorRGBToHex(getter())
+			if (previousColor != gotValue) {
+				_e.setAttribute("style", `--color-picker-color: ${gotValue};`)
+				previousColor = gotValue
+			}
+		})
+		e.addEventListener("click", (event) => {
+			if (event.target != event.currentTarget) return;
+			var picker = document.createElement("input")
+			picker.setAttribute("type", "color")
+			e.appendChild(picker)
+			requestAnimationFrame(() => picker.click())
+			picker.addEventListener("input", () => {
+				setter(Utils.colorHexToRGB(picker.value))
+			})
+		})
+		return e
 	}
 	/**
 	 * @typedef {{ text: string, contents: HTMLElement[], children: OptionsTreeNode[] }} OptionsTreeNode

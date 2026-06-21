@@ -903,6 +903,11 @@ class Options {
 				event.target.blur();
 			}
 		})
+		{
+			var gotValue = getter()
+			if (typeof gotValue == "string") e.value = gotValue
+			else e.valueAsNumber = gotValue
+		}
 		var isFocused = false;
 		Utils.whileElementConnectedCallback(e, (_e) => {
 			if (_e == document.activeElement) {
@@ -1941,10 +1946,7 @@ class VideoEditorApp {
 		zip.file("project.dat", mainData);
 		var blobFolder = zip.folder("blobs")
 		for (var blob of allSaveData.blobs) {
-			blobFolder.file(blob[0] + "." + ({
-				"image/png": "png",
-				"image/jpeg": "jpeg"
-			}[blob[1].type] ?? "dat"), blob[1]);
+			blobFolder.file(blob[0], blob[1]);
 		}
 		zip.generateAsync({ type: "blob" }).then((blob) => {
 			Utils.downloadBlob(blob, "project.zip")
@@ -2065,6 +2067,57 @@ class VideoEditorApp {
 		if (data == undefined) return;
 		this.undoStack.push(data)
 		this.load({ type: "map", value: data.data }, data.blobs)
+	}
+	addInsertContentEventListeners() {
+		window.addEventListener("paste", ((/** @type {ClipboardEvent} */ e) => {
+			if (e.clipboardData != null) {
+				this.loadInsertedContent([...e.clipboardData.items]);
+			}
+		}).bind(this))
+		document.body.addEventListener("dragover", (e) => {
+			// Make body into a drop target
+			e.preventDefault();
+		});
+		document.body.addEventListener("drop", (e) => {
+			e.preventDefault();
+			if (e.dataTransfer != null) {
+				this.loadInsertedContent([...e.dataTransfer.items]);
+			}
+		});
+	}
+	attemptPaste() {
+		navigator.clipboard.read().then(this.loadInsertedContent.bind(this))
+	}
+	/** @param {(ClipboardItem | DataTransferItem)[]} content */
+	async loadInsertedContent(content) {
+		for (var obj of content) {
+			// Evaluate this content to see if it can be inserted
+			if (obj instanceof ClipboardItem) {
+				// If it's a ClipboardItem:
+				for (var mimeType of obj.types) {
+					if (mimeType.startsWith("image/")) {
+						var blob = await obj.getType(mimeType)
+						this.insertFile(blob, "image")
+					}
+				}
+			}
+			if (obj instanceof DataTransferItem) {
+				// If it's a DataTransferItem:
+				if (obj.kind == "file" && obj.type.startsWith("image/")) {
+					var file = obj.getAsFile()
+					if (file != null) this.insertFile(file, "image")
+				}
+			}
+		}
+	}
+	/**
+	 * @param {Blob} blob
+	 * @param {"image"} mode
+	 */
+	insertFile(blob, mode) {
+		if (mode == "image") {
+			this.addFreshObject(new VImage(blob), new Map(), true)
+		}
 	}
 	/** @param {number} amount */
 	zoomTimeline(amount) {
@@ -2508,20 +2561,5 @@ class VideoEditorApp {
 }
 
 var app = new VideoEditorApp()
+app.addInsertContentEventListeners()
 app.frameLoop()
-
-{
-	let c = new OffscreenCanvas(15, 10)
-	let ctx = c.getContext('2d')
-	if (ctx == null) throw new Error()
-	ctx.fillStyle = "orange"
-	ctx.fillRect(0, 0, 10, 10)
-	ctx.fillStyle = "red"
-	ctx.fillRect(0, 0, 5, 5)
-	ctx.fillStyle = "yellow"
-	ctx.fillRect(5, 5, 5, 5)
-	ctx.fillRect(10, 0, 5, 5)
-	ctx.fillStyle = "white"
-	ctx.fillRect(10, 5, 5, 5)
-	c.convertToBlob().then((v) => console.log(v))
-}

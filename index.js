@@ -453,10 +453,11 @@ class ObjectProperty {
 		throw new Error("Cannot interpolate a base property's value")
 	}
 	/**
+	 * @param {VObject} sourceObject
 	 * @param {() => void} update
 	 * @returns {{ contents: HTMLElement[], children: OptionsTreeNode[]}}
 	 */
-	makeElements(update) {
+	makeElements(sourceObject, update) {
 		throw new Error("Cannot visualize a base property")
 	}
 }
@@ -486,6 +487,9 @@ class NumericProperty extends ObjectProperty {
 	async save() {
 		return { type: "number", value: this.value }
 	}
+	toString() {
+		return this.value.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 3 });
+	}
 	/** @param {ObjectProperty} property */
 	setFrom(property) {
 		if (property instanceof NumericProperty) {
@@ -504,10 +508,11 @@ class NumericProperty extends ObjectProperty {
 		} else throw new Error("Cannot interpolate NumericProperty with a differently-typed property")
 	}
 	/**
+	 * @param {VObject} sourceObject
 	 * @param {() => void} update
 	 * @returns {{ contents: HTMLElement[], children: OptionsTreeNode[]}}
 	 */
-	makeElements(update) {
+	makeElements(sourceObject, update) {
 		var e = Options.number(null, () => this.value.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 3 }), (v) => { this.value = v; update(); })
 		e.setAttribute("min", this.min.toString())
 		e.setAttribute("step", this.step.toString())
@@ -518,23 +523,24 @@ class NumericProperty extends ObjectProperty {
 class AutoincrementingTimeProperty extends ObjectProperty {
 	/**
 	 * @param {number} value
-	 * @param {number | undefined} [max]
 	 */
-	constructor(value, max) {
+	constructor(value) {
 		super()
 		/** @type {number} */
 		this.value = value
-		this.max = max ?? Infinity;
 	}
 	/** @returns {AutoincrementingTimeProperty} */
 	copy() {
-		return new AutoincrementingTimeProperty(this.value, this.max);
+		return new AutoincrementingTimeProperty(this.value);
 	}
 	/** @returns {Promise<CustomJSONObject>} */
 	async save() {
 		return { type: "map", value: new Map([
-			["time", { type: "number", value: this.value }]
+			["time", { type: "number", value: Math.ceil(this.value * 8192) / 8192 }]
 		]) }
+	}
+	toString() {
+		return this.value.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 3 });
 	}
 	/** @param {ObjectProperty} property */
 	setFrom(property) {
@@ -554,14 +560,15 @@ class AutoincrementingTimeProperty extends ObjectProperty {
 		} else throw new Error("Cannot interpolate AutoincrementingTimeProperty with a differently-typed property")
 	}
 	/**
+	 * @param {VObject} sourceObject
 	 * @param {() => void} update
 	 * @returns {{ contents: HTMLElement[], children: OptionsTreeNode[]}}
 	 */
-	makeElements(update) {
+	makeElements(sourceObject, update) {
 		var e = Options.number(null, () => this.value.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 5 }), (v) => { this.value = v; update(); })
 		e.setAttribute("min", "0")
 		e.setAttribute("step", "0.001")
-		e.setAttribute("max", this.max.toString())
+		if (sourceObject instanceof VVideo) e.setAttribute("max", sourceObject.duration.toString())
 		return { contents: [e], children: [] }
 	}
 }
@@ -588,6 +595,9 @@ class PositionProperty extends ObjectProperty {
 			["y", { type: "number", value: this.y }]
 		]) }
 	}
+	toString() {
+		return "X: " + this.x.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 3 }) + ", Y: " + this.y.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 3 });
+	}
 	/** @param {ObjectProperty} property */
 	setFrom(property) {
 		if (property instanceof PositionProperty) {
@@ -608,10 +618,11 @@ class PositionProperty extends ObjectProperty {
 		} else throw new Error("Cannot interpolate PositionProperty with a differently-typed property")
 	}
 	/**
+	 * @param {VObject} sourceObject
 	 * @param {() => void} update
 	 * @returns {{ contents: HTMLElement[], children: OptionsTreeNode[]}}
 	 */
-	makeElements(update) {
+	makeElements(sourceObject, update) {
 		var x = Options.number(null, () => this.x.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 3 }), (v) => { this.x = v; update(); });
 		x.setAttribute("min", "0"); x.setAttribute("step", "0.01"); x.setAttribute("max", "1");
 		var y = Options.number(null, () => this.y.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 3 }), (v) => { this.y = v; update(); });
@@ -665,6 +676,12 @@ class ColorProperty extends ObjectProperty {
 			["a", { type: "number", value: this.a }]
 		]) }
 	}
+	toString() {
+		return Utils.colorRGBToHex(this.asobj()) + " (R: " + Math.max(Math.min(Math.round(this.r), 255), 0).toString() +
+			", G: " + Math.max(Math.min(Math.round(this.g), 255), 0).toString() +
+			", B: " + Math.max(Math.min(Math.round(this.g), 255), 0).toString() +
+			", A: " + Math.max(Math.min(Math.round(this.g), 255), 0).toString() + ")";
+	}
 	/** @param {ObjectProperty} property */
 	setFrom(property) {
 		if (property instanceof ColorProperty) {
@@ -689,10 +706,11 @@ class ColorProperty extends ObjectProperty {
 		} else throw new Error("Cannot interpolate ColorProperty with a differently-typed property")
 	}
 	/**
+	 * @param {VObject} sourceObject
 	 * @param {() => void} update
 	 * @returns {{ contents: HTMLElement[], children: OptionsTreeNode[]}}
 	 */
-	makeElements(update) {
+	makeElements(sourceObject, update) {
 		var r = Options.number(null, () => this.r.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 3 }), (v) => { this.r = v; update(); });
 		r.setAttribute("min", "0"); r.setAttribute("step", "1"); r.setAttribute("max", "255");
 		var g = Options.number(null, () => this.g.toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 3 }), (v) => { this.g = v; update(); });
@@ -743,6 +761,9 @@ class StringProperty extends ObjectProperty {
 	async save() {
 		return { type: "string", value: this.value }
 	}
+	toString() {
+		return "\"" + this.value + "\"";
+	}
 	/** @param {ObjectProperty} property */
 	setFrom(property) {
 		if (property instanceof StringProperty) {
@@ -761,10 +782,11 @@ class StringProperty extends ObjectProperty {
 		} else throw new Error("Cannot interpolate StringProperty with a differently-typed property")
 	}
 	/**
+	 * @param {VObject} sourceObject
 	 * @param {() => void} update
 	 * @returns {{ contents: HTMLElement[], children: OptionsTreeNode[]}}
 	 */
-	makeElements(update) {
+	makeElements(sourceObject, update) {
 		var e = Options.string(null, () => this.value, (v) => { this.value = v; update(); })
 		return { contents: [e], children: [] }
 	}
@@ -787,6 +809,9 @@ class BlobProperty extends ObjectProperty {
 			["blobHash", { type: "string", value: await Utils.hashBlob(this.value) }]
 		]) }
 	}
+	toString() {
+		return `[File (${this.value.size / 1000}KB)]`
+	}
 	/** @param {ObjectProperty} property */
 	setFrom(property) {
 		if (property instanceof BlobProperty) {
@@ -802,10 +827,11 @@ class BlobProperty extends ObjectProperty {
 		throw new Error("Cannot interpolate a BlobProperty")
 	}
 	/**
+	 * @param {VObject} sourceObject
 	 * @param {() => void} update
 	 * @returns {{ contents: HTMLElement[], children: OptionsTreeNode[]}}
 	 */
-	makeElements(update) {
+	makeElements(sourceObject, update) {
 		var e = Options.string(null, () => Utils.hashBlobInstant(this.value) ?? "Error", (v) => { throw new Error(); })
 		return { contents: [e], children: [] }
 	}
@@ -834,6 +860,7 @@ class Handle {
 		this.updatePos()
 	}
 	onDragFinish() {
+		this.object.afterPropertiesUpdated();
 		this.app.saveUndoState()
 	}
 	updateFromObject() {
@@ -895,6 +922,7 @@ class KeyframeTimeHandle extends Handle {
 		if (this.keyframe_idx == -1) this.object.config.startTime = this.pos[0]
 		else this.object.config.keyframes[this.keyframe_idx].time = this.pos[0]
 		// update previews
+		this.object.afterPropertiesUpdated();
 		this.app.refreshTimelinePreviews(this.object)
 	}
 	updateFromObject() {
@@ -1018,6 +1046,15 @@ class Options {
 	 */
 	static p(text) {
 		var e = document.createElement("p")
+		e.innerText = text
+		return e
+	}
+	/**
+	 * @param {string} text
+	 * @returns {HTMLElement}
+	 */
+	static text(text) {
+		var e = document.createElement("span")
 		e.innerText = text
 		return e
 	}
@@ -1220,6 +1257,7 @@ class Options {
 		return button
 	}
 	/**
+	 * @param {VObject} sourceObject
 	 * @param {() => void} update
 	 * @param {string[]} allKeys
 	 * @param {Map<string, ObjectProperty>} properties
@@ -1227,7 +1265,7 @@ class Options {
 	 * @param {Map<string, ObjectProperty> | null} creationDefaultMap
 	 * @returns {OptionsTreeNode[]}
 	 */
-	static propertyMap(update, allKeys, properties, deletionAllowed, creationDefaultMap) {
+	static propertyMap(sourceObject, update, allKeys, properties, deletionAllowed, creationDefaultMap) {
 		return allKeys.map((v) => {
 			var data = properties.get(v)
 			if (data == null) return {
@@ -1235,7 +1273,7 @@ class Options {
 				contents: creationDefaultMap == null ? [] : [Options._propertyMap_add_button(properties, v, creationDefaultMap, update)],
 				children: []
 			}
-			var elements = data.makeElements(update)
+			var elements = data.makeElements(sourceObject, update)
 			return {
 				text: v,
 				contents: [
@@ -1297,11 +1335,13 @@ class ObjectCustomEditorTab extends OptionsWindowTab {
 	}
 	refresh() {
 		this.changeContents(ObjectCustomEditorTab.getContents(this.object, this.app.currentTime, (t) => this.app.setCurrentTime(t), () => {
+			this.object.afterPropertiesUpdated();
 			this.app.saveUndoState();
 			this.app.refreshTimelinePreviews(this.object)
 			this.app.updateViewportHandlesExistence()
 			this.app.refreshSelectionTabs()
 		}, () => {
+			this.object.afterPropertiesUpdated();
 			this.app.saveUndoState();
 			this.app.updateAllTimelineElements(false)
 			this.app.refreshTimelinePreviews(this.object)
@@ -1322,6 +1362,7 @@ class ObjectCustomEditorTab extends OptionsWindowTab {
 		let idx = object.config.keyframes.findIndex((v) => v.time == time);
 		var keyframeNumber = object.config.startTime == time ? -1 : (idx == -1 ? null : idx);
 		if (keyframeNumber == null) {
+			var properties = object.getPropertiesAtTime(time)
 			return [
 				Options.h("Not at a keyframe"),
 				Options.buttons([
@@ -1329,7 +1370,16 @@ class ObjectCustomEditorTab extends OptionsWindowTab {
 					{ text: "Next keyframe", onclick: ObjectCustomEditorTab.nextKeyframe(object, time, setTime) },
 					{ text: "Create keyframe here", onclick: ObjectCustomEditorTab.createKeyframe(object, time, onObjectTimingUpdated) }
 				]),
-				Options.p("Move the timeline to one of this object's keyframes (or click one of the buttons above) to edit its settings!")
+				Options.p("Move the timeline to one of this object's keyframes (or click one of the buttons above) to edit its settings!"),
+				...(properties == null ? [] : [Options.tree({
+					text: `Computed properties at ${time} seconds`,
+					contents: [],
+					children: [...properties].map((v) => ({
+						text: v[0] + ": ",
+						contents: [Options.text(v[1].toString())],
+						children: []
+					}))
+				})])
 			]
 		} else {
 			var defaults = object.getPropertiesAtKeyframe(keyframeNumber)
@@ -1342,7 +1392,7 @@ class ObjectCustomEditorTab extends OptionsWindowTab {
 				Options.tree({
 					text: `Properties at keyframe ${keyframeNumber+2}`,
 					contents: [],
-					children: Options.propertyMap(onObjectPropertiesUpdated, [...defaults.keys()], object.config.keyframes[keyframeNumber]?.properties ?? object.config.initialProperties, keyframeNumber != -1, defaults)
+					children: Options.propertyMap(object, onObjectPropertiesUpdated, [...defaults.keys()], object.config.keyframes[keyframeNumber]?.properties ?? object.config.initialProperties, keyframeNumber != -1, defaults)
 				})
 			]
 		}
@@ -1427,11 +1477,13 @@ class ObjectPropertiesEditorTab extends OptionsWindowTab {
 	}
 	refresh() {
 		this.changeContents(ObjectPropertiesEditorTab.getContents(this.object, () => {
+			this.object.afterPropertiesUpdated();
 			this.app.saveUndoState();
 			this.app.refreshTimelinePreviews(this.object)
 			this.app.updateViewportHandlesExistence()
 			this.app.refreshSelectionTabs()
 		}, () => {
+			this.object.afterPropertiesUpdated();
 			this.app.saveUndoState();
 			this.app.updateAllTimelineElements(false)
 			this.app.refreshTimelinePreviews(this.object)
@@ -1480,7 +1532,7 @@ class ObjectPropertiesEditorTab extends OptionsWindowTab {
 					onObjectTimingUpdated()
 				} })
 			],
-			children: Options.propertyMap(onObjectPropertiesUpdated, [...object.getPropertiesAtKeyframe(i - 1).keys()], v, i != 0, object.getPropertiesAtKeyframe(i - 1))
+			children: Options.propertyMap(object, onObjectPropertiesUpdated, [...object.getPropertiesAtKeyframe(i - 1).keys()], v, i != 0, object.getPropertiesAtKeyframe(i - 1))
 		}))
 		return [
 			Options.tree({
@@ -1643,6 +1695,7 @@ class VObject {
 		}
 		return object;
 	}
+	afterPropertiesUpdated() {}
 	/**
 	 * @param {number} time
 	 * @returns {boolean}
@@ -2056,7 +2109,7 @@ class VVideo extends VObject {
 	constructor(videoBlob) {
 		// - pos/size
 		var centerPos = new PositionProperty(0.5, 0.5)
-		var width = new NumericProperty(0.15)
+		var width = new NumericProperty(0.75)
 		// - video
 		var video = new BlobProperty(videoBlob)
 		var time = new AutoincrementingTimeProperty(0)
@@ -2067,10 +2120,11 @@ class VVideo extends VObject {
 			["Width", width],
 			["Video Time", time]
 		]
-		super(0, new Map(properties), 5)
+		super(0, new Map(properties), 0)
 		// data
 		this.video = video
 		this.aspect_ratio = 1
+		this.duration = 0
 		this.videoElement1 = document.createElement("video");
 		this.videoElement1.src = URL.createObjectURL(videoBlob);
 		this.videoElement1.load();
@@ -2085,15 +2139,9 @@ class VVideo extends VObject {
 				await new Promise((resolve) => requestAnimationFrame(resolve));
 			}
 			this.aspect_ratio = this.videoElement1.videoWidth / this.videoElement1.videoHeight
-			this.time.max = this.videoElement1.duration // TODO: Set object duration!
-			// Set maximum time value on all keyframes
-			for (var p of [
-				this.config.initialProperties,
-				...this.config.keyframes.map((v) => v.properties)
-			]) {
-				var timeValue = p.get("Video Time")
-				if (timeValue != undefined && timeValue instanceof AutoincrementingTimeProperty) timeValue.max = this.time.max
-			}
+			this.duration = this.videoElement1.duration
+			if (this.config.keyframes[0].time == this.config.startTime) this.config.keyframes[0].time += this.duration
+			this.afterPropertiesUpdated()
 		})()
 		// properties
 		this.centerPos = centerPos
@@ -2110,6 +2158,27 @@ class VVideo extends VObject {
 			["videoBlob", await this.video.save()],
 			...(await super.save()).value
 		]) }
+	}
+	afterPropertiesUpdated() {
+		// Cut to end of video
+		for (var i = 0; i < this.config.keyframes.length; i++) {
+			var videoTime = this.getPropertiesAtKeyframe(i).get("Video Time")
+			if (videoTime == undefined || !(videoTime instanceof AutoincrementingTimeProperty)) return console.error("video time property is missing from video object");
+			if (videoTime.value == this.duration) {
+				// Remove future keyframes
+				if (i < this.config.keyframes.length - 1) this.config.keyframes.splice(i + 1, (this.config.keyframes.length - i) - 1)
+				// Done
+				return;
+			}
+			if (videoTime.value > this.duration) {
+				// Remove future keyframes
+				if (i < this.config.keyframes.length - 1) this.config.keyframes.splice(i + 1, (this.config.keyframes.length - i) - 1)
+				// Update keyframe time
+				this.config.keyframes[i].time += this.duration - videoTime.value
+				// Done
+				return;
+			}
+		}
 	}
 	/** @returns {Blob[]} */
 	getAllBlobs() {

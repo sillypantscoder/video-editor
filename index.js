@@ -1830,19 +1830,19 @@ class VText extends VObject {
 	constructor() {
 		// - pos/size
 		var centerPos = new PositionProperty(0.5, 0.5)
-		var width = new NumericProperty(0.15)
+		var width = new NumericProperty(10)
 		// - text
 		var text = new StringProperty("Text")
 		var color = new ColorProperty(255, 255, 255, 255)
-		var textSize = new NumericProperty(0.015)
+		var scale = new NumericProperty(0.015)
 		// create!
 		/** @type {[string, ObjectProperty][]} */
 		var properties = [
 			["Center Position", centerPos],
-			["Width", width],
+			["Relative Width", width],
 			["Text", text],
 			["Text Color", color],
-			["Text Size", textSize]
+			["Scale", scale]
 		]
 		super(0, new Map(properties), 5)
 		// properties
@@ -1850,7 +1850,7 @@ class VText extends VObject {
 		this.width = width
 		this.text = text
 		this.color = color
-		this.textSize = textSize
+		this.scale = scale
 		// rendering cache
 		/** @type {CacheMap<[number, string, { r: number, g: number, b: number, a: number }, number], OffscreenCanvas>} */
 		this.renders = new CacheMap(VText.createRender, 10)
@@ -1904,7 +1904,7 @@ class VText extends VObject {
 	 * @returns {{ canvas: OffscreenCanvas, fullyLoaded: boolean }}
 	 */
 	getVisualRepresentation(screenWidth, screenHeight) {
-		var canvas = this.renders.get(this.width.value * screenWidth, this.text.value, this.color.asobj(), this.textSize.value * screenWidth);
+		var canvas = this.renders.get(this.width.value * this.scale.value * screenWidth, this.text.value, this.color.asobj(), this.scale.value * screenWidth);
 		return { canvas, fullyLoaded: true }
 	}
 	/**
@@ -1913,7 +1913,7 @@ class VText extends VObject {
 	 * @returns {{ x: number, y: number, width: number, height: number }}
 	 */
 	getPixelBoundingBox(screenWidth, screenHeight) {
-		var render = this.renders.get(this.width.value * screenWidth, this.text.value, this.color.asobj(), this.textSize.value * screenWidth);
+		var render = this.renders.get(this.width.value * this.scale.value * screenWidth, this.text.value, this.color.asobj(), this.scale.value * screenWidth);
 		var posX = (this.centerPos.x * screenWidth) - (render.width / 2)
 		var posY = (this.centerPos.y * screenHeight) - (render.height / 2)
 		return {
@@ -1929,7 +1929,7 @@ class VText extends VObject {
 	 * @param {CanvasRenderingContext2D} canvas
 	 */
 	render(screenWidth, screenHeight, canvas) {
-		var render = this.renders.get(this.width.value * screenWidth, this.text.value, this.color.asobj(), this.textSize.value * screenWidth);
+		var render = this.renders.get(this.width.value * this.scale.value * screenWidth, this.text.value, this.color.asobj(), this.scale.value * screenWidth);
 		var posX = (this.centerPos.x * screenWidth) - (render.width / 2)
 		var posY = (this.centerPos.y * screenHeight) - (render.height / 2)
 		canvas.drawImage(render, Math.round(posX), Math.round(posY))
@@ -1962,13 +1962,10 @@ class VText extends VObject {
 	 * @param {number} keyframe_number
 	 */
 	rescaleBy(delta, keyframe_number) {
-		if (delta <= 0 || this.textSize.value * delta < 0.001) return;
-		// Set Width
-		var configuredWidth = this.requireProperty("Width", NumericProperty, keyframe_number)
-		configuredWidth.value *= delta;
-		// Set Text Size
-		var configuredTextSize = this.requireProperty("Text Size", NumericProperty, keyframe_number)
-		configuredTextSize.value *= delta;
+		if (delta <= 0 || this.scale.value * delta < 0.001) return;
+		// Set Scale
+		var configuredScale = this.requireProperty("Scale", NumericProperty, keyframe_number)
+		configuredScale.value *= delta;
 	}
 }
 class VVideo extends VObject {
@@ -2194,11 +2191,6 @@ class VideoEditorApp {
 		this.currentTime = 0;
 		/** @type {VObject[]} */
 		this.objects = [];
-		this.objects.push(new VText()); // TEST
-		this.objects[0].config.startTime = 1 // TEST
-		this.objects[0].config.keyframes[0].time = 6 // TEST
-		this.objects[0].config.keyframes[0].properties.set("Center Position", new PositionProperty(0.9, 0.6)) // TEST
-		this.objects[0].config.keyframes[0].properties.set("Text Color", new ColorProperty(255, 0, 0, 255)) // TEST
 		/** @type {{ object: VObject, timelineHandles: Handle<[number]>[], viewportHandles: Handle<[number, number]>[], draggingHandle: { isTimeline: true, handle: Handle<[number]> | InvisibleTimeHandle } | { isTimeline: false, handle: Handle<[number, number]> } | null, objectEditorTab: ObjectCustomEditorTab, objectPropertiesTab: ObjectPropertiesEditorTab } | null} */
 		this.selection = null;
 		// undo/redo

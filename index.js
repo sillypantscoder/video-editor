@@ -287,6 +287,86 @@ class CustomJSON {
 		return readValue(["[END]"])
 	}
 }
+class FFmpegAccessor {
+	static FFMPEG = (() => {
+		var f = FFmpeg.create()
+		f.on("log", (e) => {
+			console.log(e.type, e.message)
+		})
+		return f;
+	})();
+	static LOCK = (() => {
+		var lock = Promise.resolve()
+		/** @type {(() => void) | null} */
+		var resolver = null
+		return {
+			acquire: async () => {
+				await lock;
+				lock = new Promise((resolve) => resolver = resolve)
+			},
+			unlock: () => {
+				if (resolver == null) throw new Error("Lock is already unlocked")
+				resolver()
+				resolver = null;
+			}
+		}
+	})();
+	/**
+	 * @param {Blob} blob
+	 */
+	static async splitVideoOrAudioIntoStreams(blob) {
+		await this.LOCK.acquire();
+		// Get stream list
+		this.FFMPEG.writeFile("/split", new Uint8Array(await blob.arrayBuffer()))
+		await this.FFMPEG.ffprobe(["-show_entries", "stream=index,codec_type,channels,channel_layout", "-of", "default=nw=1", "/split", "-o", "/probe.txt"])
+		var probeOutput = new TextDecoder().decode(await this.FFMPEG.readFile("/probe.txt")).trim().split("\n")
+		// Parse stream list
+		/** @type {({ index: number, streamIndex: number, type: "video" } | { index: number, streamIndex: number, type: "audio", channels: number, layout_name: string })[]} */
+		var streams = []
+		/** @type {Map<string, number>} */
+		var streamIndexes = new Map();
+		for (let i = 0; i < probeOutput.length; ) {
+			let index = Number(probeOutput[i].split("=")[1]); i++;
+			let type = probeOutput[i].split("=")[1]; i++;
+			let streamIndex = (streamIndexes.get(type) ?? -1) + 1; streamIndexes.set(type, streamIndex);
+			if (type == "video") {
+				streams.push({ index, streamIndex, type })
+			} else if (type == "audio") {
+				let channels = Number(probeOutput[i].split("=")[1]); i++;
+				let layout_name = probeOutput[i].split("=")[1]; i++;
+				streams.push({ index, streamIndex, type, channels, layout_name })
+			} else {
+				console.error("Unknown stream type:", type)
+			}
+		}
+		// Extract each into own file
+		var args = [
+			"-i", "/split",
+			...streams.flatMap((s) => [
+				"-map",
+				`0:${{ "video": "v", "audio": "a", "subtitle": "s" }[s.type]}:${s.streamIndex}`,
+				"-c",
+				"copy",
+				`/out${s.index}.${{ "video": "mp4", "audio": "wav", "subtitle": "srt" }[s.type]}`
+			])
+		]
+		await this.FFMPEG.exec(args)
+		// Finish / clean up
+		await this.FFMPEG.deleteFile("/split");
+		/** @type {{ type: "video" | "audio", data: Blob }[]} */
+		var outputData = [];
+		for (let s of streams) {
+			let filename = `/out${s.index}.${{ "video": "mp4", "audio": "wav", "subtitle": "srt" }[s.type]}`
+			outputData.push({
+				type: s.type,
+				data: new Blob([await this.FFMPEG.readFile(filename)])
+			})
+			await this.FFMPEG.deleteFile(filename)
+		}
+		this.LOCK.unlock();
+		return outputData;
+	}
+}
 
 /**
  * @template {any[]} T
@@ -2005,7 +2085,7 @@ class VVideo extends VObject {
 				await new Promise((resolve) => requestAnimationFrame(resolve));
 			}
 			this.aspect_ratio = this.videoElement1.videoWidth / this.videoElement1.videoHeight
-			this.time.max = this.videoElement1.duration
+			this.time.max = this.videoElement1.duration // TODO: Set object duration!
 			// Set maximum time value on all keyframes
 			for (var p of [
 				this.config.initialProperties,
@@ -2439,7 +2519,15 @@ class VideoEditorApp {
 		if (mode == "image") {
 			this.addFreshObject(new VImage(blob), new Map(), true)
 		} else if (mode == "video") {
-			this.addFreshObject(new VVideo(blob), new Map(), true)
+			FFmpegAccessor.splitVideoOrAudioIntoStreams(blob).then((streams) => {
+				for (var s of streams) {
+					if (s.type == "video") {
+						this.addFreshObject(new VVideo(s.data), new Map(), false);
+					} else {
+						console.warn("Audio is not supported yet...")
+					}
+				}
+			});
 		}
 	}
 	/** @param {number} amount */

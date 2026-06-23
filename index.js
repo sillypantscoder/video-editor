@@ -81,33 +81,27 @@ class Utils {
 	}
 	/**
 	 * @template {HTMLElement} T
-	 * @param {WeakRef<T>} element
-	 * @param {(element: T) => void} callback
-	 */
-	static _whileElementConnectedCallback(element, callback) {
-		var shouldContinue = (() => {
-			var e = element.deref();
-			if (e == undefined) {
-				return false;
-			} else {
-				if (e.checkVisibility()) callback(e);
-				return true;
-			}
-		})();
-		if (shouldContinue) requestAnimationFrame(() => {
-			requestAnimationFrame(() => {
-				this._whileElementConnectedCallback(element, callback)
-			})
-		})
-	}
-	/**
-	 * @template {HTMLElement} T
 	 * @param {T} element
 	 * @param {(element: T) => void} callback
 	 */
 	static whileElementConnectedCallback(element, callback) {
-		var elementRef = new WeakRef(element)
-		Utils._whileElementConnectedCallback(elementRef, callback)
+		requestAnimationFrame(() => {
+			// Check if the element is connected
+			if (element.isConnected) {
+				if (element.checkVisibility()) callback(element);
+			} else {
+				element.style.pointerEvents = "none";
+				element.style.background = "#F00";
+				element.style.color = "white";
+				element.style.fontWeight = "bold";
+				element.style.textDecoration = "line-through";
+				return;
+			}
+			// Loop
+			requestAnimationFrame(() => {
+				this.whileElementConnectedCallback(element, callback)
+			});
+		});
 	}
 	/**
 	 * Uses canvas.measureText to compute and return the width of the given text of given font in pixels.

@@ -194,6 +194,27 @@ class Utils {
 			return undefined;
 		}
 	}
+	/**
+	 * @param {AudioBuffer} audioBuffer
+	 * @param {number} startTimeSec
+	 * @param {number} endTimeSec
+	 */
+	static async getAudioLoudness(audioBuffer, startTimeSec, endTimeSec) {
+		// convert time to sample indexes
+		var startSample = Math.round(Math.floor(Math.max(                 0, startTimeSec) * audioBuffer.sampleRate));
+		var endSample =   Math.round(Math.floor(Math.min(audioBuffer.duration, endTimeSec) * audioBuffer.sampleRate));
+		if (startSample >= endSample) throw new Error("Invalid time window selection.");
+		// Calculate RMS
+		const channelData = audioBuffer.getChannelData(0);
+		let sumOfSquares = 0;
+		let sampleCount = 0;
+		for (let i = startSample; i < endSample; i++) {
+			sumOfSquares += channelData[i] * channelData[i];
+			sampleCount++;
+		}
+		const rms = Math.sqrt(sumOfSquares / sampleCount);
+		return 5 * rms;
+	}
 }
 /**
  * @typedef {{ type: "number", value: number } | { type: "string", value: string } | { type: "boolean", value: boolean } | { type: "list", value: CustomJSONObject[] } | { type: "map", value: Map<string, CustomJSONObject> } | { type: "null" }} CustomJSONObject
@@ -312,22 +333,23 @@ class FFmpegAccessor {
 		await this.LOCK.acquire();
 		// Get stream list
 		this.FFMPEG.writeFile("/split", new Uint8Array(await blob.arrayBuffer()))
-		await this.FFMPEG.ffprobe(["-show_entries", "stream=index,codec_type,channels,channel_layout", "-of", "default=nw=1", "/split", "-o", "/probe.txt"])
-		var probeOutput = new TextDecoder().decode(await this.FFMPEG.readFile("/probe.txt")).trim().split("\n")
+		await this.FFMPEG.ffprobe(["-show_entries", "stream=index,codec_type,channels,channel_layout,channel_layout:stream_disposition", "-of", "json", "/split", "-o", "/probe.txt"])
+		var probeOutput = JSON.parse(new TextDecoder().decode(await this.FFMPEG.readFile("/probe.txt"))).streams
 		// Parse stream list
 		/** @type {({ index: number, streamIndex: number, type: "video" } | { index: number, streamIndex: number, type: "audio", channels: number, layout_name: string })[]} */
 		var streams = []
 		/** @type {Map<string, number>} */
 		var streamIndexes = new Map();
-		for (let i = 0; i < probeOutput.length; ) {
-			let index = Number(probeOutput[i].split("=")[1]); i++;
-			let type = probeOutput[i].split("=")[1]; i++;
+		for (let i = 0; i < probeOutput.length; i++) {
+			let index = Number(probeOutput[i].index);
+			let type = probeOutput[i].codec_type;
 			let streamIndex = (streamIndexes.get(type) ?? -1) + 1; streamIndexes.set(type, streamIndex);
 			if (type == "video") {
+				if (probeOutput[i].disposition.attached_pic == 1) continue;
 				streams.push({ index, streamIndex, type })
 			} else if (type == "audio") {
-				let channels = Number(probeOutput[i].split("=")[1]); i++;
-				let layout_name = probeOutput[i].split("=")[1]; i++;
+				let channels = Number(probeOutput[i].channels);
+				let layout_name = probeOutput[i].channel_layout;
 				streams.push({ index, streamIndex, type, channels, layout_name })
 			} else {
 				console.error("Unknown stream type:", type)
@@ -400,6 +422,77 @@ class CacheMap {
 		var value = this.func(...params)
 		this.addCachedValue(cacheKey, value)
 		return value;
+	}
+}
+/**
+ * @template {any[]} T
+ * @template V
+ */
+class AsyncCacheMap {
+	/** @param {(...params: T) => Promise<V>} func */
+	constructor(func, size = 10) {
+		/** @type {(...params: T) => Promise<V>} */
+		this.func = func
+		/** @type {number} */
+		this.size = size
+		/** @type {Map<string, { hasValue: false, callbacks: ((value: V) => void)[] } | { hasValue: true, value: V }>} */
+		this.items = new Map()
+	}
+	clear() {
+		this.items.clear()
+	}
+	/**
+	 * @param {string} param
+	 * @param {V} result
+	 */
+	async addCachedValue(param, result) {
+		// update promises
+		var previousEntry = this.items.get(param)
+		if (previousEntry != undefined && !previousEntry.hasValue) previousEntry.callbacks.forEach((v) => v(result))
+		// Set item
+		this.items.set(param, { hasValue: true, value: result })
+		if (this.items.size > this.size) {
+			this.items.delete(this.items.keys().next().value ?? "")
+		}
+	}
+	/**
+	 * @param {T} params
+	 * @returns {V | undefined}
+	 */
+	get(...params) {
+		var cacheKey = JSON.stringify(params.map((v) => v instanceof Blob ? Utils.hashBlobInstant(v) : v))
+		// Check for cached value
+		var cachedValue = this.items.get(cacheKey)
+		if (cachedValue != undefined) {
+			if (cachedValue.hasValue) return cachedValue.value;
+			else return undefined;
+		}
+		// New cache entry
+		this.items.set(cacheKey, { hasValue: false, callbacks: [] })
+		this.func(...params).then((v) => this.addCachedValue(cacheKey, v))
+		return undefined;
+	}
+	/**
+	 * @param {T} params
+	 * @returns {Promise<V>}
+	 */
+	async getAsync(...params) {
+		var cacheKey = JSON.stringify(params.map((v) => v instanceof Blob ? Utils.hashBlobInstant(v) : v))
+		// Check for cached value
+		var cachedValue = this.items.get(cacheKey)
+		if (cachedValue != undefined) {
+			if (cachedValue.hasValue) return cachedValue.value;
+			else {
+				let promiseArray = cachedValue.callbacks;
+				let finalValue = await new Promise((resolve) => void(promiseArray.push(resolve)));
+				return finalValue;
+			}
+		}
+		// New cache entry
+		this.items.set(cacheKey, { hasValue: false, callbacks: [] })
+		let finalValue = await this.func(...params)
+		this.addCachedValue(cacheKey, finalValue)
+		return finalValue;
 	}
 }
 
@@ -1767,9 +1860,9 @@ class VObject {
 	/**
 	 * @param {number} screenWidth
 	 * @param {number} screenHeight
-	 * @returns {{ canvas: OffscreenCanvas, fullyLoaded: boolean }}
+	 * @returns {Promise<OffscreenCanvas>}
 	 */
-	getVisualRepresentation(screenWidth, screenHeight) {
+	async getVisualRepresentation(screenWidth, screenHeight) {
 		throw new Error("Cannot render a base object")
 	}
 	/**
@@ -1828,7 +1921,7 @@ class VImage extends VObject {
 		this.fullyLoaded = createImageBitmap(imageBlob).then(async (bitmap) => {
 			this.aspect_ratio = bitmap.width / bitmap.height
 			// Wait until the object has finished rendering
-			while (this.renders.get(bitmap.width, bitmap.height, this.image.value).canvas == null) {
+			while (this.renders.get(bitmap.width, bitmap.height, this.image.value) == undefined) {
 				await new Promise((resolve) => requestAnimationFrame(resolve));
 			}
 		})
@@ -1836,8 +1929,8 @@ class VImage extends VObject {
 		this.centerPos = centerPos
 		this.width = width
 		// rendering cache
-		/** @type {CacheMap<[number, number, Blob], { canvas: null | OffscreenCanvas }>} */
-		this.renders = new CacheMap(VImage.createRender, 30)
+		/** @type {AsyncCacheMap<[number, number, Blob], OffscreenCanvas>} */
+		this.renders = new AsyncCacheMap(VImage.createRender, 30)
 	}
 	/** @returns {Promise<{ type: "map", value: Map<string, CustomJSONObject> }>} */
 	async save() {
@@ -1855,41 +1948,45 @@ class VImage extends VObject {
 	 * @param {number} width
 	 * @param {number} height
 	 * @param {Blob} blob
-	 * @returns {{ canvas: null | OffscreenCanvas }}
+	 * @returns {Promise<OffscreenCanvas>}
 	 */
-	static createRender(width, height, blob) {
-		/** @type {{ canvas: null | OffscreenCanvas }} */
-		var result = { canvas: null }
-		// Load image asynchronously and update the cached render when ready
-		createImageBitmap(blob).then((bitmap) => {
-			// make width and height
-			var targetWidth = Math.max(1, Math.round(width))
-			var targetHeight = Math.max(1, Math.round(height))
-			// create canvas
-			var canvas = new OffscreenCanvas(targetWidth, targetHeight)
-			var ctx = canvas.getContext('2d')
-			if (ctx == null) throw new Error("can't render image because context is null")
-			// draw image
-			ctx.drawImage(bitmap, 0, 0, targetWidth, targetHeight)
-			// save
-			result.canvas = canvas
-			bitmap.close()
-		}).catch((error) => {
-			console.error("Failed to create image render:", error)
-		})
-		return result
+	static async createRender(width, height, blob) {
+		var bitmap = await createImageBitmap(blob)
+		// make width and height
+		var targetWidth = Math.max(1, Math.round(width))
+		var targetHeight = Math.max(1, Math.round(height))
+		// create canvas
+		var canvas = new OffscreenCanvas(targetWidth, targetHeight)
+		var ctx = canvas.getContext('2d')
+		if (ctx == null) throw new Error("can't render image because context is null")
+		// draw image
+		ctx.drawImage(bitmap, 0, 0, targetWidth, targetHeight)
+		// save
+		bitmap.close()
+		return canvas
 	}
 	/**
 	 * @param {number} screenWidth
 	 * @param {number} screenHeight
-	 * @returns {{ canvas: OffscreenCanvas, fullyLoaded: boolean }}
+	 * @returns {Promise<OffscreenCanvas>}
 	 */
-	getVisualRepresentation(screenWidth, screenHeight) {
+	async getVisualRepresentation(screenWidth, screenHeight) {
 		var expectedWidth = this.width.value * screenWidth
 		var expectedHeight = this.width.value * screenWidth / this.aspect_ratio
-		var canvas = this.renders.get(expectedWidth, expectedHeight, this.image.value).canvas
-		if (canvas == null) return { canvas: new OffscreenCanvas(expectedWidth, expectedHeight), fullyLoaded: false }
-		else return { canvas, fullyLoaded: true }
+		var canvas = await this.renders.getAsync(expectedWidth, expectedHeight, this.image.value)
+		return canvas
+	}
+	/**
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
+	 * @returns {OffscreenCanvas}
+	 */
+	getRender(screenWidth, screenHeight) {
+		var expectedWidth = this.width.value * screenWidth
+		var expectedHeight = this.width.value * screenWidth / this.aspect_ratio
+		var canvas = this.renders.get(expectedWidth, expectedHeight, this.image.value)
+		if (canvas != undefined) return canvas
+		else return new OffscreenCanvas(expectedWidth, expectedHeight)
 	}
 	/**
 	 * @param {number} screenWidth
@@ -1897,7 +1994,7 @@ class VImage extends VObject {
 	 * @returns {{ x: number, y: number, width: number, height: number }}
 	 */
 	getPixelBoundingBox(screenWidth, screenHeight) {
-		var render = this.getVisualRepresentation(screenWidth, screenHeight).canvas;
+		var render = this.getRender(screenWidth, screenHeight);
 		var posX = (this.centerPos.x * screenWidth) - (render.width / 2)
 		var posY = (this.centerPos.y * screenHeight) - (render.height / 2)
 		return {
@@ -1913,7 +2010,7 @@ class VImage extends VObject {
 	 * @param {CanvasRenderingContext2D} canvas
 	 */
 	render(screenWidth, screenHeight, canvas) {
-		var render = this.getVisualRepresentation(screenWidth, screenHeight).canvas;
+		var render = this.getRender(screenWidth, screenHeight);
 		var posX = (this.centerPos.x * screenWidth) - (render.width / 2)
 		var posY = (this.centerPos.y * screenHeight) - (render.height / 2)
 		canvas.drawImage(render, Math.round(posX), Math.round(posY))
@@ -2028,11 +2125,20 @@ class VText extends VObject {
 	/**
 	 * @param {number} screenWidth
 	 * @param {number} screenHeight
-	 * @returns {{ canvas: OffscreenCanvas, fullyLoaded: boolean }}
+	 * @returns {OffscreenCanvas}
 	 */
-	getVisualRepresentation(screenWidth, screenHeight) {
-		var canvas = this.renders.get(this.width.value * this.scale.value * screenWidth, this.text.value, this.color.asobj(), this.scale.value * screenWidth);
-		return { canvas, fullyLoaded: true }
+	getRender(screenWidth, screenHeight) {
+		var expectedWidth = this.width.value * this.scale.value * screenWidth
+		var canvas = this.renders.get(expectedWidth, this.text.value, this.color.asobj(), this.scale.value * screenWidth)
+		return canvas
+	}
+	/**
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
+	 * @returns {Promise<OffscreenCanvas>}
+	 */
+	async getVisualRepresentation(screenWidth, screenHeight) {
+		return this.getRender(screenWidth, screenHeight);
 	}
 	/**
 	 * @param {number} screenWidth
@@ -2040,7 +2146,7 @@ class VText extends VObject {
 	 * @returns {{ x: number, y: number, width: number, height: number }}
 	 */
 	getPixelBoundingBox(screenWidth, screenHeight) {
-		var render = this.renders.get(this.width.value * this.scale.value * screenWidth, this.text.value, this.color.asobj(), this.scale.value * screenWidth);
+		var render = this.getRender(screenWidth, screenHeight);
 		var posX = (this.centerPos.x * screenWidth) - (render.width / 2)
 		var posY = (this.centerPos.y * screenHeight) - (render.height / 2)
 		return {
@@ -2056,7 +2162,7 @@ class VText extends VObject {
 	 * @param {CanvasRenderingContext2D} canvas
 	 */
 	render(screenWidth, screenHeight, canvas) {
-		var render = this.renders.get(this.width.value * this.scale.value * screenWidth, this.text.value, this.color.asobj(), this.scale.value * screenWidth);
+		var render = this.getRender(screenWidth, screenHeight);
 		var posX = (this.centerPos.x * screenWidth) - (render.width / 2)
 		var posY = (this.centerPos.y * screenHeight) - (render.height / 2)
 		canvas.drawImage(render, Math.round(posX), Math.round(posY))
@@ -2122,11 +2228,11 @@ class VVideo extends VObject {
 		this.videoElement1 = document.createElement("video");
 		this.videoElement1.src = URL.createObjectURL(videoBlob);
 		this.videoElement1.load();
-		this.videoElement1_InUse = false;
+		/** @type {Promise<1>} */ this.videoElement1Lock = Promise.resolve(1);
 		this.videoElement2 = document.createElement("video");
 		this.videoElement2.src = URL.createObjectURL(videoBlob);
 		this.videoElement2.load();
-		this.videoElement2_InUse = false;
+		/** @type {Promise<2>} */ this.videoElement2Lock = Promise.resolve(2);
 		this.fullyLoaded = (async () => {
 			await new Promise((resolve) => requestAnimationFrame(resolve));
 			while (this.videoElement1.readyState < 2 || this.videoElement2.readyState < 2) {
@@ -2142,8 +2248,8 @@ class VVideo extends VObject {
 		this.width = width
 		this.time = time
 		// rendering cache
-		/** @type {{ width: number, height: number, time: number, canvas: OffscreenCanvas }[]} */
-		this.renders = []
+		/** @type {AsyncCacheMap<[number, number], OffscreenCanvas>} */
+		this.renders = new AsyncCacheMap(this.requestRender.bind(this), 40)
 	}
 	/** @returns {Promise<{ type: "map", value: Map<string, CustomJSONObject> }>} */
 	async save() {
@@ -2154,7 +2260,7 @@ class VVideo extends VObject {
 		]) }
 	}
 	afterPropertiesUpdated() {
-		// Cut to end of video
+		// Clamp object length to video length
 		for (var i = 0; i < this.config.keyframes.length; i++) {
 			var videoTime = this.getPropertiesAtKeyframe(i).get("Video Time")
 			if (videoTime == undefined || !(videoTime instanceof AutoincrementingTimeProperty)) return console.error("video time property is missing from video object");
@@ -2205,55 +2311,47 @@ class VVideo extends VObject {
 	}
 	/**
 	 * @param {number} expectedWidth
-	 * @param {1 | 2} videoElement
+	 * @param {number} time
 	 */
-	async requestRender(expectedWidth, videoElement) {
+	async requestRender(expectedWidth, time) {
 		// Setup
-		if (videoElement == 1) this.videoElement1_InUse = true
-		if (videoElement == 2) this.videoElement2_InUse = true
-		var currentTime = this.time.value;
+		var videoElement = await Promise.any([this.videoElement1Lock, this.videoElement2Lock])
+		/** @type {() => void} */ var finish = () => void(0)
+		if (videoElement == 1) this.videoElement1Lock = new Promise((resolve) => finish = () => resolve(1))
+		if (videoElement == 2) this.videoElement2Lock = new Promise((resolve) => finish = () => resolve(2))
 		await this.fullyLoaded;
 		// Create render
-		var canvas = await VVideo.createRender(expectedWidth, this.aspect_ratio, currentTime, this.videoElement1)
-		// Save the new render!
-		this.renders.push({ width: canvas.width, height: canvas.height, time: currentTime, canvas })
-		if (this.renders.length > 40) this.renders.shift()
+		var canvas = await VVideo.createRender(expectedWidth, this.aspect_ratio, time, this.videoElement1)
 		// Cleanup
-		if (videoElement == 1) this.videoElement1_InUse = false
-		if (videoElement == 2) this.videoElement2_InUse = false
+		finish();
+		return canvas
 	}
 	/**
 	 * @param {number} screenWidth
 	 * @param {number} screenHeight
-	 * @returns {{ canvas: OffscreenCanvas, fullyLoaded: boolean }}
+	 * @returns {Promise<OffscreenCanvas>}
 	 */
-	getVisualRepresentation(screenWidth, screenHeight) {
+	async getVisualRepresentation(screenWidth, screenHeight) {
+		var expectedWidth = Math.round(this.width.value * screenWidth)
+		var canvas = await this.requestRender(expectedWidth, this.time.value)
+		return canvas
+	}
+	/**
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
+	 * @returns {OffscreenCanvas}
+	 */
+	getRender(screenWidth, screenHeight) {
 		var expectedWidth = Math.round(this.width.value * screenWidth)
 		var expectedHeight = Math.round(this.width.value * screenWidth / this.aspect_ratio)
 		var currentTime = this.time.value
 		// Find an existing canvas
-		var canvas = this.renders.find((v) => v.width == expectedWidth && v.height == expectedHeight && v.time == currentTime)?.canvas
-		var fullyLoaded = canvas != undefined
-		if (canvas == undefined) {
-			// Attempt to generate a new render
-			if (! this.videoElement1_InUse) {
-				this.requestRender(expectedWidth, 1)
-			} else if (! this.videoElement2_InUse) {
-				this.requestRender(expectedWidth, 2)
-			}
-			// Use another render of the same size instead...?
-			var renders_sortedByClosestTime = [...this.renders].reverse().sort((a, b) => Math.abs(a.time - currentTime) - Math.abs(b.time - currentTime))
-			canvas = renders_sortedByClosestTime.find((v) => v.width == expectedWidth && v.height == expectedHeight)?.canvas
-			if (canvas == undefined) {
-				// Use the render with the closest time instead...?
-				canvas = renders_sortedByClosestTime.at(0)?.canvas
-				if (canvas == undefined) {
-					// Fallback: blank image
-					canvas = new OffscreenCanvas(expectedWidth, expectedHeight)
-				}
-			} else if ((renders_sortedByClosestTime.find((v) => v.width == expectedWidth && v.height == expectedHeight)?.time ?? -Infinity) - currentTime < 0.3) fullyLoaded = true; // avoid lag by not delaying preview generation
+		var canvas = this.renders.get(expectedWidth, currentTime)
+		if (canvas != undefined) return canvas
+		else {
+			this.requestRender(expectedWidth, currentTime)
+			return new OffscreenCanvas(expectedWidth, expectedHeight)
 		}
-		return { canvas, fullyLoaded }
 	}
 	/**
 	 * @param {number} screenWidth
@@ -2278,7 +2376,7 @@ class VVideo extends VObject {
 	 * @param {CanvasRenderingContext2D} canvas
 	 */
 	render(screenWidth, screenHeight, canvas) {
-		var render = this.getVisualRepresentation(screenWidth, screenHeight).canvas;
+		var render = this.getRender(screenWidth, screenHeight);
 		var posX = (this.centerPos.x * screenWidth) - (render.width / 2)
 		var posY = (this.centerPos.y * screenHeight) - (render.height / 2)
 		canvas.drawImage(render, Math.round(posX), Math.round(posY))
@@ -2315,6 +2413,154 @@ class VVideo extends VObject {
 		// Set Width
 		var configuredWidth = this.requireProperty("Width", NumericProperty, keyframe_number)
 		configuredWidth.value = Utils.roundToSignificantDigitsBinary(configuredWidth.value * delta, 8);
+	}
+}
+class VAudio extends VObject {
+	timelineElementColor = "#E0E"
+	/**
+	 * @param {Blob} audioBlob
+	 */
+	constructor(audioBlob) {
+		// - audio
+		var volume = new NumericProperty(1)
+		var audio = new BlobProperty(audioBlob)
+		var time = new AutoincrementingTimeProperty(0)
+		// create!
+		/** @type {[string, ObjectProperty][]} */
+		var properties = [
+			["Volume", volume],
+			["Audio Time", time]
+		]
+		super(0, new Map(properties), 0)
+		// data
+		this.audio = audio
+		this.duration = 0
+		/** @type {AudioBuffer | null} */
+		this.audioBuffer = null;
+		this.fullyLoaded = (async () => {
+			// Construct AudioBuffer
+			var arrayBuffer = await audioBlob.arrayBuffer();
+			var audioContext = new OfflineAudioContext(1, 1, 44100);
+			this.audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+			// Set duration
+			this.duration = this.audioBuffer.duration
+			if (this.config.keyframes[0].time == this.config.startTime) this.config.keyframes[0].time += this.duration
+			this.afterPropertiesUpdated()
+		})()
+		// properties
+		this.volume = volume
+		this.time = time
+		// rendering cache
+		/** @type {AsyncCacheMap<[number, number, number, AudioBuffer], OffscreenCanvas>} */
+		this.renders = new AsyncCacheMap(VAudio.createRender, 5)
+	}
+	/** @returns {Promise<{ type: "map", value: Map<string, CustomJSONObject> }>} */
+	async save() {
+		return { type: "map", value: new Map([
+			["type", { type: "string", value: "audio" }],
+			["audioBlob", await this.audio.save()],
+			...(await super.save()).value
+		]) }
+	}
+	afterPropertiesUpdated() {
+		// Clamp object length to audio length
+		for (var i = 0; i < this.config.keyframes.length; i++) {
+			var audioTime = this.getPropertiesAtKeyframe(i).get("Audio Time")
+			if (audioTime == undefined || !(audioTime instanceof AutoincrementingTimeProperty)) return console.error("audio time property is missing from audio object");
+			if (audioTime.value == this.duration) {
+				// Remove future keyframes
+				if (i < this.config.keyframes.length - 1) this.config.keyframes.splice(i + 1, (this.config.keyframes.length - i) - 1)
+				// Done
+				return;
+			}
+			if (audioTime.value > this.duration) {
+				// Remove future keyframes
+				if (i < this.config.keyframes.length - 1) this.config.keyframes.splice(i + 1, (this.config.keyframes.length - i) - 1)
+				// Update keyframe time
+				this.config.keyframes[i].time += this.duration - audioTime.value
+				// Done
+				return;
+			}
+		}
+		// Clamp volume
+		for (var i = -1; i < this.config.keyframes.length; i++) {
+			var volume = (this.config.keyframes[i]?.properties ?? this.config.initialProperties).get("Volume")
+			if (volume == undefined || !(volume instanceof NumericProperty)) continue;
+			if (volume.value < 0) volume.value = 0
+			if (volume.value > 1) volume.value = 1
+		}
+	}
+	/** @returns {Blob[]} */
+	getAllBlobs() {
+		return [this.audio.value]
+	}
+	/**
+	 * @param {number} width
+	 * @param {number} volume
+	 * @param {number} time
+	 * @param {AudioBuffer} audioBuffer
+	 * @returns {Promise<OffscreenCanvas>}
+	 */
+	static async createRender(width, volume, time, audioBuffer) {
+		// get audio volume
+		var computedVolume = await Utils.getAudioLoudness(audioBuffer, time - 0.5, time + 0.5) * volume;
+		// calculate bar appearance
+		var pixelSize = Math.ceil(Math.max(computedVolume * width, width / 20));
+		var opacity = (computedVolume + 1) / 3
+		// create canvas
+		var height = Math.max(Math.floor(width / 5), 10)
+		var canvas = new OffscreenCanvas(width, height)
+		var ctx = canvas.getContext('2d')
+		if (ctx == null) throw new Error("can't render audio because context is null")
+		// draw image
+		ctx.fillStyle = "white";
+		ctx.globalAlpha = opacity;
+		ctx.beginPath();
+		ctx.roundRect((width - pixelSize) / 2, 0, pixelSize, height, Math.floor(width / 20));
+		ctx.fill()
+		// finish
+		return canvas;
+	}
+	/**
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
+	 * @returns {Promise<OffscreenCanvas>}
+	 */
+	async getVisualRepresentation(screenWidth, screenHeight) {
+		if (this.audioBuffer != null) {
+			var expectedWidth = screenWidth * 0.125
+			var canvas = await this.renders.getAsync(expectedWidth, this.volume.value, this.time.value, this.audioBuffer)
+			return canvas;
+		} else throw new Error("Cannot getVisualRepresentation before audio is fully loaded")
+	}
+	/**
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
+	 * @returns {{ x: number, y: number, width: number, height: number }}
+	 */
+	getPixelBoundingBox(screenWidth, screenHeight) {
+		return {
+			x: -Infinity,
+			y: -Infinity,
+			width: 0,
+			height: 0
+		}
+	}
+	/**
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
+	 * @param {CanvasRenderingContext2D} canvas
+	 */
+	render(screenWidth, screenHeight, canvas) {
+		// no rendering needed
+	}
+	/**
+	 * @param {number} keyframe_number
+	 * @param {VideoEditorApp} app
+	 * @returns {Handle<[number, number]>[]}
+	 */
+	getViewportHandles(keyframe_number, app) {
+		return []
 	}
 }
 
@@ -2555,9 +2801,9 @@ class VideoEditorApp {
 					if (mimeType.startsWith("image/")) {
 						var blob = await obj.getType(mimeType)
 						this.insertFile(blob, "image")
-					} else if (mimeType.startsWith("video/")) {
+					} else if (mimeType.startsWith("video/") || mimeType.startsWith("audio/")) {
 						var blob = await obj.getType(mimeType)
-						this.insertFile(blob, "video")
+						this.insertFile(blob, "media")
 					}
 				}
 			}
@@ -2567,27 +2813,27 @@ class VideoEditorApp {
 				if (obj.type.startsWith("image/")) {
 					var file = obj.getAsFile()
 					if (file != null) this.insertFile(file, "image")
-				} else if (obj.type.startsWith("video/")) {
+				} else if (obj.type.startsWith("video/") || obj.type.startsWith("audio/")) {
 					var file = obj.getAsFile()
-					if (file != null) this.insertFile(file, "video")
+					if (file != null) this.insertFile(file, "media")
 				}
 			}
 		}
 	}
 	/**
 	 * @param {Blob} blob
-	 * @param {"image" | "video"} mode
+	 * @param {"image" | "media"} mode
 	 */
 	insertFile(blob, mode) {
 		if (mode == "image") {
 			this.addFreshObject(new VImage(blob), new Map(), true)
-		} else if (mode == "video") {
+		} else if (mode == "media") {
 			FFmpegAccessor.splitVideoOrAudioIntoStreams(blob).then((streams) => {
 				for (var s of streams) {
 					if (s.type == "video") {
 						this.addFreshObject(new VVideo(s.data), new Map(), false);
-					} else {
-						console.warn("Audio is not supported yet...")
+					} else if (s.type == "audio") {
+						this.addFreshObject(new VAudio(s.data), new Map(), false);
 					}
 				}
 			});
@@ -2676,16 +2922,12 @@ class VideoEditorApp {
 		var time = object.config.startTime + (previewHeight / this.timelinePixelsPerSecond)
 		object.setCurrentPropertiesToCalculatedPropertiesAtTime(time)
 
-		var canvas = object.getVisualRepresentation(this.element_preview.width, this.element_preview.height)
-		while (canvas.fullyLoaded == false) {
-			// Delay previews until next frame
-			await new Promise((resolve) => requestAnimationFrame(resolve))
-			canvas = object.getVisualRepresentation(this.element_preview.width, this.element_preview.height)
-		}
-		canvas.canvas.getContext('2d')
+		var canvas = await object.getVisualRepresentation(this.element_preview.width, this.element_preview.height)
+
+		void(canvas.getContext('2d')) // yeah...
 
 		// convert to blob URL
-		var blob = await canvas.canvas.convertToBlob({ type: 'image/png' });
+		var blob = await canvas.convertToBlob({ type: 'image/png' });
 		var imageUrl = URL.createObjectURL(blob);
 		// draw to image
 		var img = new Image();

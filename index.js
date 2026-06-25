@@ -913,7 +913,7 @@ class BlobProperty extends ObjectProperty {
 	setFrom(property) {
 		if (property instanceof BlobProperty) {
 			this.value = property.value
-		} else throw new Error("Cannot set NumericProperty to a differently-typed property")
+		} else throw new Error("Cannot set BlobProperty to a differently-typed property")
 	}
 	/**
 	 * @param {number} time
@@ -930,6 +930,48 @@ class BlobProperty extends ObjectProperty {
 	 */
 	makeElements(sourceObject, update) {
 		var e = Options.string(null, () => Utils.hashBlobInstant(this.value) ?? "Error", (v) => { throw new Error(); })
+		return { contents: [e], children: [] }
+	}
+}
+class SubObjectListProperty extends ObjectProperty {
+	/** @param {VObject[]} objects */
+	constructor(objects) {
+		super()
+		/** @type {VObject[]} */
+		this.objects = objects
+	}
+	/** @returns {SubObjectListProperty} */
+	copy() {
+		return new SubObjectListProperty(this.objects)
+	}
+	/** @returns {Promise<CustomJSONObject>} */
+	async save() {
+		return { type: "list", value: await Promise.all(this.objects.map((v) => v.save())) }
+	}
+	toString() {
+		return `[${this.objects.length} objects]`
+	}
+	/** @param {ObjectProperty} property */
+	setFrom(property) {
+		if (property instanceof SubObjectListProperty) {
+			this.objects = [...property.objects]
+		} else throw new Error("Cannot set SubObjectListProperty to a differently-typed property")
+	}
+	/**
+	 * @param {number} time
+	 * @param {ObjectProperty} endpoint
+	 * @returns {SubObjectListProperty}
+	 */
+	interpolate(time, endpoint) {
+		throw new Error("Cannot interpolate a SubObjectListProperty")
+	}
+	/**
+	 * @param {VObject} sourceObject
+	 * @param {() => void} update
+	 * @returns {{ contents: HTMLElement[], children: OptionsTreeNode[]}}
+	 */
+	makeElements(sourceObject, update) {
+		var e = Options.string(null, () => "Error", (v) => { throw new Error(); })
 		return { contents: [e], children: [] }
 	}
 }
@@ -1573,7 +1615,7 @@ class ObjectPropertiesEditorTab extends OptionsWindowTab {
 		this.refresh()
 	}
 	refresh() {
-		this.changeContents(ObjectPropertiesEditorTab.getContents(this.object, () => {
+		this.changeContents(ObjectPropertiesEditorTab.getContents(this.object, this.app, () => {
 			this.object.afterPropertiesUpdated();
 			this.app.saveUndoState();
 			this.app.refreshTimelinePreviews(this.object)
@@ -1596,11 +1638,11 @@ class ObjectPropertiesEditorTab extends OptionsWindowTab {
 	}
 	/**
 	 * @param {VObject} object
+	 * @param {VideoEditorApp} app
 	 * @param {() => void} onObjectPropertiesUpdated
 	 * @param {() => void} onObjectTimingUpdated
-	 * @param {() => void} deleteObject
 	 */
-	static getContents(object, onObjectPropertiesUpdated, onObjectTimingUpdated, deleteObject) {
+	static getMainTree(object, app, onObjectPropertiesUpdated, onObjectTimingUpdated) {
 		var treeItems = [object.config.initialProperties, ...object.config.keyframes.map((v) => v.properties)].flatMap((v, i) => ({
 			text: `Keyframe ${i+1} at time`,
 			contents: [
@@ -1632,17 +1674,28 @@ class ObjectPropertiesEditorTab extends OptionsWindowTab {
 			children: Options.propertyMap(object, onObjectPropertiesUpdated, [...object.getPropertiesAtKeyframe(i - 1).keys()], v, i != 0, object.getPropertiesAtKeyframe(i - 1))
 		}))
 		return [
+			{
+				text: "Layer Number",
+				contents: [Options.number(null, () => object.config.renderLayer, (v) => object.config.renderLayer = Math.floor(v))],
+				children: []
+			},
+			...treeItems,
+			...object.getCustomPropertiesMenuItems(app)
+		]
+	}
+	/**
+	 * @param {VObject} object
+	 * @param {VideoEditorApp} app
+	 * @param {() => void} onObjectPropertiesUpdated
+	 * @param {() => void} onObjectTimingUpdated
+	 * @param {() => void} deleteObject
+	 */
+	static getContents(object, app, onObjectPropertiesUpdated, onObjectTimingUpdated, deleteObject) {
+		return [
 			Options.tree({
 				text: "All Object Properties",
 				contents: [],
-				children: [
-					{
-						text: "Layer Number",
-						contents: [Options.number(null, () => object.config.renderLayer, (v) => object.config.renderLayer = Math.floor(v))],
-						children: []
-					},
-					...treeItems
-				]
+				children: this.getMainTree(object, app, onObjectPropertiesUpdated, onObjectTimingUpdated)
 			}),
 			Options.buttons([
 				{ text: "Delete Object", onclick: deleteObject, color: "#F00" }
@@ -1747,6 +1800,7 @@ class VObject {
 		if (objectType == "text") object = new VText()
 		else if (objectType == "image") object = new VImage(getBlob(dataMap.get("imageBlob")))
 		else if (objectType == "video") object = new VVideo(getBlob(dataMap.get("videoBlob")))
+		else if (objectType == "audio") object = new VAudio(getBlob(dataMap.get("audioBlob")))
 		else throw new Error("Unknown object type: " + objectType)
 		// set object layer
 		{
@@ -1792,6 +1846,13 @@ class VObject {
 			});
 		}
 		return object;
+	}
+	/**
+	 * @param {VideoEditorApp} app
+	 * @returns {OptionsTreeNode[]}
+	 */
+	getCustomPropertiesMenuItems(app) {
+		return [];
 	}
 	afterPropertiesUpdated() {}
 	/**
@@ -2086,7 +2147,7 @@ class VAbstractVisualObject extends VObject {
 		// rendering cache
 		this.getRenderingParams = getRenderingParams;
 		/** @type {AsyncPriorityCacheMap<T, OffscreenCanvas>} */
-		this.renders = new AsyncPriorityCacheMap((...params) => this.createRender(...params), 40)
+		this.renders = new AsyncPriorityCacheMap((...params) => this.createRender(...params), 50)
 	}
 	/**
 	 * @param {number} screenWidth
@@ -2320,6 +2381,7 @@ class VVideo extends VAbstractVisualObject {
 				return;
 			}
 		}
+		if (this.config.keyframes.length == 0) this.config.keyframes.push({ time: this.config.startTime + 0.25, properties: new Map() })
 	}
 	/** @returns {Blob[]} */
 	getAllBlobs() {
@@ -2441,6 +2503,7 @@ class VAudio extends VObject {
 				return;
 			}
 		}
+		if (this.config.keyframes.length == 0) this.config.keyframes.push({ time: this.config.startTime + 0.25, properties: new Map() })
 		// Clamp volume
 		for (var i = -1; i < this.config.keyframes.length; i++) {
 			var volume = (this.config.keyframes[i]?.properties ?? this.config.initialProperties).get("Volume")
@@ -2522,6 +2585,263 @@ class VAudio extends VObject {
 		return []
 	}
 }
+class VGroup extends VObject {
+	timelineElementColor = "#DDD"
+	/**
+	 * @param {VObject[]} objects
+	 */
+	constructor(objects) {
+		// - contained objects
+		var contents = new SubObjectListProperty(objects)
+		var minTime = Math.min(...objects.map((v) => v.config.startTime))
+		var maxTime = Math.max(...objects.flatMap((v) => v.config.keyframes.map((k) => k.time)))
+		objects.forEach((o) => {
+			o.config.startTime -= minTime
+			o.config.keyframes.forEach((k) => k.time -= minTime)
+		})
+		maxTime -= minTime;
+		// - contained time
+		var containedTime = new AutoincrementingTimeProperty(0)
+		// create!
+		/** @type {[string, ObjectProperty][]} */
+		var properties = [
+			["Contained Time", containedTime]
+		]
+		super(minTime, new Map(properties), maxTime);
+		// render layer
+		this.config.renderLayer = Math.min(...objects.map((v) => v.config.renderLayer))
+		objects.forEach((v) => v.config.renderLayer -= this.config.renderLayer)
+		// data
+		this.contents = contents
+		this.containedTime = containedTime
+		this.fullyLoaded = new Promise((resolve) => Promise.all(this.contents.objects.map((v) => v.fullyLoaded)).then(resolve))
+	}
+	/** @returns {Promise<{ type: "map", value: Map<string, CustomJSONObject> }>} */
+	async save() {
+		return { type: "map", value: new Map([
+			["type", { type: "string", value: "group" }],
+			["contents", await this.contents.save()],
+			...(await super.save()).value
+		]) }
+	}
+	/**
+	 * @param {VideoEditorApp} app
+	 * @returns {OptionsTreeNode[]}
+	 */
+	getCustomPropertiesMenuItems(app) {
+		return [
+			{
+				text: "Contained Objects",
+				contents: [
+					Options.button({
+						text: "Ungroup",
+						onclick: () => this.ungroup(app)
+					})
+				],
+				children: this.contents.objects.map((object, index) => ({
+					text: `Object ${index+1} (${object.constructor.name.substring(1)})`,
+					contents: [],
+					children: ObjectPropertiesEditorTab.getMainTree(object, app, () => {
+						this.afterPropertiesUpdated();
+						object.afterPropertiesUpdated();
+						app.saveUndoState();
+						app.refreshTimelinePreviews(this)
+						app.updateViewportHandlesExistence()
+						app.refreshSelectionTabs()
+					}, () => {
+						this.afterPropertiesUpdated();
+						object.afterPropertiesUpdated();
+						app.saveUndoState();
+						app.updateAllTimelineElements(false)
+						app.refreshTimelinePreviews(this)
+						app.updateHandlePositions()
+						app.updateViewportHandlesExistence()
+						app.refreshSelectionTabs()
+					})
+				}))
+			}
+		];
+	}
+	/** @param {VideoEditorApp} app */
+	ungroup(app) {
+		for (var o of this.contents.objects) {
+			o.config.renderLayer += this.config.renderLayer
+			o.config.startTime += this.config.startTime
+			o.config.keyframes.forEach((v) => v.time += this.config.startTime)
+			// TODO: contained time :(
+			app.objects.push(o)
+		}
+		app.objects.splice(app.objects.indexOf(this), 1)
+		app.setSelectedObject(null);
+		app.saveUndoState();
+		app.updateTimelineTicks();
+		app.updateAllTimelineElements(false);
+		// add previews to timeline element
+		this.contents.objects.forEach((v) => {
+			var timelineElement = app.timelineElements.get(v);
+			if (timelineElement != undefined) app.addPreviewToTimelineElement(v, timelineElement);
+		});
+		this.contents.objects = []
+	}
+	/** @param {VObject} object */
+	addObject(object) {
+		var startTimeOffset = Math.min(object.config.startTime - this.config.startTime, 0)
+		var renderLayerOffset = Math.min(object.config.renderLayer - this.config.renderLayer, 0)
+		this.config.startTime += startTimeOffset
+		this.config.renderLayer += renderLayerOffset
+		object.config.startTime -= this.config.startTime
+		object.config.renderLayer -= this.config.renderLayer
+		for (var o of this.contents.objects) {
+			o.config.startTime -= startTimeOffset
+			o.config.renderLayer -= renderLayerOffset
+			o.config.keyframes.forEach((v) => v.time -= startTimeOffset)
+		}
+		this.contents.objects.push(object)
+		this.afterPropertiesUpdated();
+	}
+	afterPropertiesUpdated() {
+		var duration = Math.max(...this.contents.objects.flatMap((v) => v.config.keyframes.map((k) => k.time)))
+		// Clamp object length to contained length
+		for (var i = 0; i < this.config.keyframes.length; i++) {
+			// Clamp actual value
+			var containedTime = this.config.keyframes[i].properties.get("Contained Time")
+			if (containedTime != undefined && containedTime instanceof AutoincrementingTimeProperty) {
+				if (containedTime.value > duration) containedTime.value = duration
+			}
+			// Clamp computed value
+			var containedTime = this.getPropertiesAtKeyframe(i).get("Contained Time")
+			if (containedTime == undefined || !(containedTime instanceof AutoincrementingTimeProperty)) return console.error("contained time property is missing from group object");
+			if (containedTime.value == duration) {
+				// Remove future keyframes
+				if (i < this.config.keyframes.length - 1) this.config.keyframes.splice(i + 1, (this.config.keyframes.length - i) - 1)
+				// Done
+				return;
+			}
+			if (containedTime.value > duration) {
+				// Remove future keyframes
+				if (i < this.config.keyframes.length - 1) this.config.keyframes.splice(i + 1, (this.config.keyframes.length - i) - 1)
+				// Update keyframe time
+				this.config.keyframes[i].time += duration - containedTime.value
+				// Done
+				return;
+			}
+		}
+		// Require object length to be exactly contained length
+		var lastContainedTime = this.getPropertiesAtKeyframe(this.config.keyframes.length - 1).get("Contained Time")
+		if (lastContainedTime instanceof AutoincrementingTimeProperty && lastContainedTime.value < duration) {
+			if (this.config.keyframes[this.config.keyframes.length - 1].properties.size == 0) {
+				this.config.keyframes[this.config.keyframes.length - 1].time += duration - lastContainedTime.value
+			} else {
+				var targetTime = duration + this.config.keyframes[this.config.keyframes.length - 1].time - lastContainedTime.value
+				this.config.keyframes.push({ time: targetTime, properties: new Map() })
+			}
+		}
+	}
+	/** @param {number} time */
+	setCurrentPropertiesToCalculatedPropertiesAtTime(time) {
+		super.setCurrentPropertiesToCalculatedPropertiesAtTime(time);
+		for (var o of this.contents.objects) {
+			o.setCurrentPropertiesToCalculatedPropertiesAtTime(time - this.config.startTime);
+		}
+	}
+	/**
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
+	 * @returns {Promise<OffscreenCanvas>}
+	 */
+	async getVisualRepresentation(screenWidth, screenHeight) {
+		var box = this.getPixelBoundingBox(screenWidth, screenHeight);
+		var canvas = new OffscreenCanvas(box.width, box.height);
+		var ctx = canvas.getContext('2d') ?? (() => {
+			throw new Error("can't render group because context is null");
+		})();
+		ctx.translate(-box.x, -box.y);
+		for (var o of this.contents.objects) {
+			if (! o.isVisibleAtTime(this.containedTime.value)) continue;
+			o.setCurrentPropertiesToCalculatedPropertiesAtTime(this.containedTime.value)
+			let render = await o.getVisualRepresentation(screenWidth, screenHeight)
+			if (o instanceof VText || o instanceof VAbstractVisualObject) {
+				ctx.drawImage(
+					render,
+					Math.round((o.centerPos.x * screenWidth) - (render.width / 2)),
+					Math.round((o.centerPos.y * screenHeight) - (render.height / 2))
+				);
+			}
+		}
+		return canvas;
+	}
+	/**
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
+	 * @returns {{ x: number, y: number, width: number, height: number }}
+	 */
+	getPixelBoundingBox(screenWidth, screenHeight) {
+		var boundingBox = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
+		for (var box of this.contents.objects.filter((v) => v.isVisibleAtTime(this.containedTime.value)).map((v) => v.getPixelBoundingBox(screenWidth, screenHeight))) {
+			if (! Number.isFinite(box.x)) continue;
+			boundingBox.minX = Math.min(boundingBox.minX, box.x)
+			boundingBox.minY = Math.min(boundingBox.minY, box.y)
+			boundingBox.maxX = Math.max(boundingBox.maxX, box.x + box.width)
+			boundingBox.maxY = Math.max(boundingBox.maxY, box.y + box.height)
+		}
+		if (! Number.isFinite(boundingBox.minX)) {
+			return { x: Number.MIN_SAFE_INTEGER, y: Number.MIN_SAFE_INTEGER, width: 1, height: 1 }
+		}
+		return {
+			x: boundingBox.minX,
+			y: boundingBox.minY,
+			width: boundingBox.maxX - boundingBox.minX,
+			height: boundingBox.maxY - boundingBox.minY
+		}
+	}
+	/**
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
+	 * @param {CanvasRenderingContext2D} canvas
+	 */
+	render(screenWidth, screenHeight, canvas) {
+		for (var o of [...this.contents.objects].sort((a, b) => a.config.renderLayer - b.config.renderLayer)) {
+			if (! o.isVisibleAtTime(this.containedTime.value)) continue;
+			o.setCurrentPropertiesToCalculatedPropertiesAtTime(this.containedTime.value)
+			o.render(screenWidth, screenHeight, canvas)
+		}
+	}
+	/**
+	 * @param {number} keyframe_number
+	 * @param {VideoEditorApp} app
+	 * @returns {Handle<[number, number]>[]}
+	 */
+	getViewportHandles(keyframe_number, app) {
+		return [
+			new ObjectRescaleHandle(app, this, { x: -1, y: -1 }, this.moveBy.bind(this), this.rescaleBy.bind(this), keyframe_number),
+			new ObjectRescaleHandle(app, this, { x: 1, y: -1 }, this.moveBy.bind(this), this.rescaleBy.bind(this), keyframe_number),
+			new ObjectRescaleHandle(app, this, { x: -1, y: 1 }, this.moveBy.bind(this), this.rescaleBy.bind(this), keyframe_number),
+			new ObjectRescaleHandle(app, this, { x: 1, y: 1 }, this.moveBy.bind(this), this.rescaleBy.bind(this), keyframe_number)
+		]
+	}
+	/**
+	 * @param {{ x: number, y: number }} delta
+	 * @param {number} keyframe_number
+	 */
+	moveBy(delta, keyframe_number) {
+		for (var o of this.contents.objects) {
+			if (o instanceof VText || o instanceof VAbstractVisualObject || o instanceof VGroup) {
+				for (var i = -1; i < o.config.keyframes.length; i++) o.moveBy(delta, i)
+			}
+		}
+	}
+	/**
+	 * @param {number} delta
+	 * @param {number} keyframe_number
+	 */
+	rescaleBy(delta, keyframe_number) {
+		for (var o of this.contents.objects) {
+			if (o instanceof VText || o instanceof VAbstractVisualObject || o instanceof VGroup) {
+				for (var i = -1; i < o.config.keyframes.length; i++) o.rescaleBy(delta, i)
+			}
+		}
+	}
+}
 
 class VideoEditorApp {
 	constructor() {
@@ -2551,8 +2871,8 @@ class VideoEditorApp {
 		this.mainOptionsTab = new OptionsWindowTab("Scene", [
 			Options.number("Current time:", () => this.currentTime, (v) => this.setCurrentTime(v)),
 			Options.buttons([
-				{ text: "Export Project", onclick: () => this.export().then((blob) => Utils.downloadBlob(blob, "project.zip")) },
-				{ text: "Import Project", onclick: () => this.requestImport() }
+				{ text: "Export to Zip", onclick: () => this.export().then((blob) => Utils.downloadBlob(blob, "project.zip")) },
+				{ text: "Import from Zip", onclick: () => this.requestImport() }
 			]),
 			Options.h("Create an object..."),
 			Options.buttons([
@@ -2560,8 +2880,9 @@ class VideoEditorApp {
 					["Text", new StringProperty(prompt("Enter the text to display:", "Text") ?? (() => {
 						throw new Error("Cancelled by user");
 					})())]
-				]), true) }
-			])
+				]), true, true) }
+			]),
+			Options.p("To upload an image, video clip, or audio clip, drag it onto the page. To create a group, select an object and right-click on another object.")
 		])
 		this.mainOptionsTab.show()
 		this.mainOptionsTab.focus()
@@ -2688,11 +3009,14 @@ class VideoEditorApp {
 	/**
 	 * @param {VObject} object
 	 * @param {Map<string, ObjectProperty>} properties
+	 * @param {boolean} setTime
 	 * @param {boolean} select
 	 */
-	addFreshObject(object, properties, select) {
-		object.config.startTime = this.currentTime
-		object.config.keyframes[0].time += this.currentTime
+	addFreshObject(object, properties, setTime, select) {
+		if (setTime) {
+			object.config.startTime = this.currentTime
+			object.config.keyframes[0].time += this.currentTime
+		}
 		for (var entry of properties) {
 			var existingProperty = object.config.initialProperties.get(entry[0])
 			if (existingProperty == undefined) throw new Error("Can't add object with property '" + entry[0] + "' as that property doesn't exist")
@@ -2784,14 +3108,14 @@ class VideoEditorApp {
 	 */
 	insertFile(blob, mode) {
 		if (mode == "image") {
-			this.addFreshObject(new VImage(blob), new Map(), true)
+			this.addFreshObject(new VImage(blob), new Map(), true, true)
 		} else if (mode == "media") {
 			FFmpegAccessor.splitVideoOrAudioIntoStreams(blob).then((streams) => {
 				for (var s of streams) {
 					if (s.type == "video") {
-						this.addFreshObject(new VVideo(s.data), new Map(), false);
+						this.addFreshObject(new VVideo(s.data), new Map(), true, false);
 					} else if (s.type == "audio") {
-						this.addFreshObject(new VAudio(s.data), new Map(), false);
+						this.addFreshObject(new VAudio(s.data), new Map(), true, false);
 					}
 				}
 			});
@@ -2870,7 +3194,7 @@ class VideoEditorApp {
 
 		// Get the height of previous preview elements
 		var previewHeight = (timelineElement.lastElementChild?.getBoundingClientRect().bottom ?? timelineElement.getBoundingClientRect().top) - timelineElement.getBoundingClientRect().top;
-		if (previewHeight > timelineElement.getBoundingClientRect().height) {
+		if ((!timelineElement.isConnected) || previewHeight > timelineElement.getBoundingClientRect().height) {
 			// done creating previews for this element!
 			delete timelineElement.dataset.adding_previews_started_at
 			return;
@@ -3230,6 +3554,40 @@ class VideoEditorApp {
 		this.selection.draggingHandle.handle.onDragFinish()
 		this.selection.draggingHandle.handle.element.classList.remove("active")
 		this.selection.draggingHandle = null
+	}
+	/** @param {HTMLElement} element */
+	rightClickOnTimelineElement(element) {
+		let object = new Map([...this.timelineElements].map((v) => [v[1], v[0]])).get(element)
+		if (this.selection == null) {
+			this.setSelectedObject(object ?? null);
+		} else if (object != undefined) {
+			// Replace currently selected object with group
+			if (this.selection.object instanceof VGroup) {
+				if (this.selection.object == object) {
+					// Ungroup objects
+					this.selection.object.ungroup(this);
+				} else {
+					// Group object
+					this.objects.splice(this.objects.indexOf(object), 1);
+					this.selection.object.addObject(object);
+					this.updateAllTimelineElements(false);
+					this.refreshTimelinePreviews(this.selection.object);
+					this.updateHandlePositions();
+					this.updateViewportHandlesExistence();
+					this.refreshSelectionTabs();
+				}
+			} else {
+				if (this.selection.object == object) {
+					this.objects.splice(this.objects.indexOf(object), 1);
+					var group = new VGroup([object]);
+				} else {
+					this.objects.splice(this.objects.indexOf(object), 1);
+					this.objects.splice(this.objects.indexOf(this.selection.object), 1);
+					var group = new VGroup([this.selection.object, object]);
+				}
+				this.addFreshObject(group, new Map(), false, true);
+			}
+		}
 	}
 }
 

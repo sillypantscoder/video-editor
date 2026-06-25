@@ -1897,158 +1897,6 @@ class VObject {
 		throw new Error("Cannot move a base object")
 	}
 }
-class VImage extends VObject {
-	timelineElementColor = "#B00"
-	/**
-	 * @param {Blob} imageBlob
-	 */
-	constructor(imageBlob) {
-		// - pos/size
-		var centerPos = new PositionProperty(0.5, 0.5)
-		var width = new NumericProperty(0.15)
-		// - blob
-		var image = new BlobProperty(imageBlob)
-		// create!
-		/** @type {[string, ObjectProperty][]} */
-		var properties = [
-			["Center Position", centerPos],
-			["Width", width]
-		]
-		super(0, new Map(properties), 5)
-		// data
-		this.image = image
-		this.aspect_ratio = 1
-		this.fullyLoaded = createImageBitmap(imageBlob).then(async (bitmap) => {
-			this.aspect_ratio = bitmap.width / bitmap.height
-			// Wait until the object has finished rendering
-			while (this.renders.get(bitmap.width, bitmap.height, this.image.value) == undefined) {
-				await new Promise((resolve) => requestAnimationFrame(resolve));
-			}
-		})
-		// properties
-		this.centerPos = centerPos
-		this.width = width
-		// rendering cache
-		/** @type {AsyncCacheMap<[number, number, Blob], OffscreenCanvas>} */
-		this.renders = new AsyncCacheMap(VImage.createRender, 30)
-	}
-	/** @returns {Promise<{ type: "map", value: Map<string, CustomJSONObject> }>} */
-	async save() {
-		return { type: "map", value: new Map([
-			["type", { type: "string", value: "image" }],
-			["imageBlob", await this.image.save()],
-			...(await super.save()).value
-		]) }
-	}
-	/** @returns {Blob[]} */
-	getAllBlobs() {
-		return [this.image.value]
-	}
-	/**
-	 * @param {number} width
-	 * @param {number} height
-	 * @param {Blob} blob
-	 * @returns {Promise<OffscreenCanvas>}
-	 */
-	static async createRender(width, height, blob) {
-		var bitmap = await createImageBitmap(blob)
-		// make width and height
-		var targetWidth = Math.max(1, Math.round(width))
-		var targetHeight = Math.max(1, Math.round(height))
-		// create canvas
-		var canvas = new OffscreenCanvas(targetWidth, targetHeight)
-		var ctx = canvas.getContext('2d')
-		if (ctx == null) throw new Error("can't render image because context is null")
-		// draw image
-		ctx.drawImage(bitmap, 0, 0, targetWidth, targetHeight)
-		// save
-		bitmap.close()
-		return canvas
-	}
-	/**
-	 * @param {number} screenWidth
-	 * @param {number} screenHeight
-	 * @returns {Promise<OffscreenCanvas>}
-	 */
-	async getVisualRepresentation(screenWidth, screenHeight) {
-		var expectedWidth = this.width.value * screenWidth
-		var expectedHeight = this.width.value * screenWidth / this.aspect_ratio
-		var canvas = await this.renders.getAsync(expectedWidth, expectedHeight, this.image.value)
-		return canvas
-	}
-	/**
-	 * @param {number} screenWidth
-	 * @param {number} screenHeight
-	 * @returns {OffscreenCanvas}
-	 */
-	getRender(screenWidth, screenHeight) {
-		var expectedWidth = this.width.value * screenWidth
-		var expectedHeight = this.width.value * screenWidth / this.aspect_ratio
-		var canvas = this.renders.get(expectedWidth, expectedHeight, this.image.value)
-		if (canvas != undefined) return canvas
-		else return new OffscreenCanvas(expectedWidth, expectedHeight)
-	}
-	/**
-	 * @param {number} screenWidth
-	 * @param {number} screenHeight
-	 * @returns {{ x: number, y: number, width: number, height: number }}
-	 */
-	getPixelBoundingBox(screenWidth, screenHeight) {
-		var render = this.getRender(screenWidth, screenHeight);
-		var posX = (this.centerPos.x * screenWidth) - (render.width / 2)
-		var posY = (this.centerPos.y * screenHeight) - (render.height / 2)
-		return {
-			x: posX,
-			y: posY,
-			width: render.width,
-			height: render.height
-		}
-	}
-	/**
-	 * @param {number} screenWidth
-	 * @param {number} screenHeight
-	 * @param {CanvasRenderingContext2D} canvas
-	 */
-	render(screenWidth, screenHeight, canvas) {
-		var render = this.getRender(screenWidth, screenHeight);
-		var posX = (this.centerPos.x * screenWidth) - (render.width / 2)
-		var posY = (this.centerPos.y * screenHeight) - (render.height / 2)
-		canvas.drawImage(render, Math.round(posX), Math.round(posY))
-	}
-	/**
-	 * @param {number} keyframe_number
-	 * @param {VideoEditorApp} app
-	 * @returns {Handle<[number, number]>[]}
-	 */
-	getViewportHandles(keyframe_number, app) {
-		return [
-			new ObjectRescaleHandle(app, this, { x: -1, y: -1 }, this.moveBy.bind(this), this.rescaleBy.bind(this), keyframe_number),
-			new ObjectRescaleHandle(app, this, { x: 1, y: -1 }, this.moveBy.bind(this), this.rescaleBy.bind(this), keyframe_number),
-			new ObjectRescaleHandle(app, this, { x: -1, y: 1 }, this.moveBy.bind(this), this.rescaleBy.bind(this), keyframe_number),
-			new ObjectRescaleHandle(app, this, { x: 1, y: 1 }, this.moveBy.bind(this), this.rescaleBy.bind(this), keyframe_number)
-		]
-	}
-	/**
-	 * @param {{ x: number, y: number }} delta
-	 * @param {number} keyframe_number
-	 */
-	moveBy(delta, keyframe_number) {
-		// Set Center Position
-		var configuredPosition = this.requireProperty("Center Position", PositionProperty, keyframe_number)
-		configuredPosition.x += delta.x;
-		configuredPosition.y += delta.y;
-	}
-	/**
-	 * @param {number} delta
-	 * @param {number} keyframe_number
-	 */
-	rescaleBy(delta, keyframe_number) {
-		if (delta <= 0 || this.width.value * delta < 0.001) return;
-		// Set Width
-		var configuredWidth = this.requireProperty("Width", NumericProperty, keyframe_number)
-		configuredWidth.value = Utils.roundToSignificantDigitsBinary(configuredWidth.value * delta, 8);
-	}
-}
 class VText extends VObject {
 	timelineElementColor = "#0C0"
 	constructor() {
@@ -2201,26 +2049,216 @@ class VText extends VObject {
 		configuredScale.value *= delta;
 	}
 }
-class VVideo extends VObject {
+/** @template {any[]} T */
+class VAbstractVisualObject extends VObject {
+	/**
+	 * @param {[string, ObjectProperty][]} additionalProperties
+	 * @param {(...params: T) => Promise<OffscreenCanvas>} renderer
+	 * @param {number} length
+	 */
+	constructor(additionalProperties, renderer, length) {
+		// - pos/size
+		var centerPos = new PositionProperty(0.5, 0.5)
+		var width = new NumericProperty(0.5)
+		// create!
+		/** @type {[string, ObjectProperty][]} */
+		var properties = [
+			["Center Position", centerPos],
+			["Width", width],
+			...additionalProperties
+		]
+		super(0, new Map(properties), length)
+		// properties
+		this.centerPos = centerPos
+		this.width = width
+		// rendering cache
+		/** @type {AsyncCacheMap<T, OffscreenCanvas>} */
+		this.renders = new AsyncCacheMap(renderer.bind(this), 40)
+	}
+	/**
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
+	 * @returns {number}
+	 */
+	getExpectedHeight(screenWidth, screenHeight) {
+		throw new Error("`VAbstractVisualObject` is an abstract class; `getExpectedHeight` must be overridden")
+	}
+	/**
+	 * @param {number} expectedWidth
+	 * @param {number} expectedHeight
+	 * @returns {OffscreenCanvas}
+	 */
+	getRender(expectedWidth, expectedHeight) {
+		throw new Error("`VAbstractVisualObject` is an abstract class; `getRender` must be overridden")
+	}
+	/**
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
+	 * @returns {{ x: number, y: number, width: number, height: number }}
+	 */
+	getPixelBoundingBox(screenWidth, screenHeight) {
+		var width = this.width.value * screenWidth;
+		var height = this.getExpectedHeight(screenWidth, screenHeight)
+		var posX = (this.centerPos.x * screenWidth) - (width / 2)
+		var posY = (this.centerPos.y * screenHeight) - (height / 2)
+		return {
+			x: posX,
+			y: posY,
+			width: width,
+			height: height
+		}
+	}
+	/**
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
+	 * @param {CanvasRenderingContext2D} canvas
+	 */
+	render(screenWidth, screenHeight, canvas) {
+		var render = this.getRender(screenWidth, screenHeight);
+		var posX = (this.centerPos.x * screenWidth) - (render.width / 2)
+		var posY = (this.centerPos.y * screenHeight) - (render.height / 2)
+		canvas.drawImage(render, Math.round(posX), Math.round(posY))
+	}
+	/**
+	 * @param {number} keyframe_number
+	 * @param {VideoEditorApp} app
+	 * @returns {Handle<[number, number]>[]}
+	 */
+	getViewportHandles(keyframe_number, app) {
+		return [
+			new ObjectRescaleHandle(app, this, { x: -1, y: -1 }, this.moveBy.bind(this), this.rescaleBy.bind(this), keyframe_number),
+			new ObjectRescaleHandle(app, this, { x: 1, y: -1 }, this.moveBy.bind(this), this.rescaleBy.bind(this), keyframe_number),
+			new ObjectRescaleHandle(app, this, { x: -1, y: 1 }, this.moveBy.bind(this), this.rescaleBy.bind(this), keyframe_number),
+			new ObjectRescaleHandle(app, this, { x: 1, y: 1 }, this.moveBy.bind(this), this.rescaleBy.bind(this), keyframe_number)
+		]
+	}
+	/**
+	 * @param {{ x: number, y: number }} delta
+	 * @param {number} keyframe_number
+	 */
+	moveBy(delta, keyframe_number) {
+		// Set Center Position
+		var configuredPosition = this.requireProperty("Center Position", PositionProperty, keyframe_number)
+		configuredPosition.x += delta.x;
+		configuredPosition.y += delta.y;
+	}
+	/**
+	 * @param {number} delta
+	 * @param {number} keyframe_number
+	 */
+	rescaleBy(delta, keyframe_number) {
+		if (delta <= 0 || this.width.value * delta < 0.001) return;
+		// Set Width
+		var configuredWidth = this.requireProperty("Width", NumericProperty, keyframe_number)
+		configuredWidth.value = Utils.roundToSignificantDigitsBinary(configuredWidth.value * delta, 8);
+	}
+}
+/** @extends {VAbstractVisualObject<[number, number, Blob]>} */
+class VImage extends VAbstractVisualObject {
+	timelineElementColor = "#B00"
+	/**
+	 * @param {Blob} imageBlob
+	 */
+	constructor(imageBlob) {
+		// - blob
+		var image = new BlobProperty(imageBlob)
+		// create!
+		super([], VImage.createRender, 5)
+		// data
+		this.image = image
+		this.aspect_ratio = 1
+		this.fullyLoaded = createImageBitmap(imageBlob).then(async (bitmap) => {
+			this.aspect_ratio = bitmap.width / bitmap.height
+			// Wait until the object has finished rendering
+			while (this.renders.get(bitmap.width, bitmap.height, this.image.value) == undefined) {
+				await new Promise((resolve) => requestAnimationFrame(resolve));
+			}
+		})
+		// rendering cache
+		this.previousRender = new OffscreenCanvas(1, 1)
+	}
+	/** @returns {Promise<{ type: "map", value: Map<string, CustomJSONObject> }>} */
+	async save() {
+		return { type: "map", value: new Map([
+			["type", { type: "string", value: "image" }],
+			["imageBlob", await this.image.save()],
+			...(await super.save()).value
+		]) }
+	}
+	/** @returns {Blob[]} */
+	getAllBlobs() {
+		return [this.image.value]
+	}
+	/**
+	 * @param {number} width
+	 * @param {number} height
+	 * @param {Blob} blob
+	 * @returns {Promise<OffscreenCanvas>}
+	 */
+	static async createRender(width, height, blob) {
+		var bitmap = await createImageBitmap(blob)
+		// create canvas
+		var canvas = new OffscreenCanvas(width, height)
+		var ctx = canvas.getContext('2d')
+		if (ctx == null) throw new Error("can't render image because context is null")
+		// draw image
+		ctx.drawImage(bitmap, 0, 0, width, height)
+		// save
+		bitmap.close()
+		this.previousRender = canvas;
+		return canvas
+	}
+	/**
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
+	 */
+	getExpectedHeight(screenWidth, screenHeight) {
+		return this.width.value * screenWidth / this.aspect_ratio
+	}
+	/**
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
+	 * @returns {Promise<OffscreenCanvas>}
+	 */
+	async getVisualRepresentation(screenWidth, screenHeight) {
+		var exactWidth = this.width.value * screenWidth
+		var exactHeight = this.getExpectedHeight(screenWidth, screenHeight)
+		var expectedWidth = Math.max(1, Math.round(exactWidth))
+		var expectedHeight = Math.max(1, Math.round(exactHeight))
+		var canvas = await this.renders.getAsync(expectedWidth, expectedHeight, this.image.value)
+		return canvas
+	}
+	/**
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
+	 * @returns {OffscreenCanvas}
+	 */
+	getRender(screenWidth, screenHeight) {
+		var exactWidth = this.width.value * screenWidth
+		var exactHeight = this.getExpectedHeight(screenWidth, screenHeight)
+		var expectedWidth = Math.max(1, Math.round(exactWidth))
+		var expectedHeight = Math.max(1, Math.round(exactHeight))
+		var canvas = this.renders.get(expectedWidth, expectedHeight, this.image.value)
+		if (canvas != undefined) return canvas
+		else return this.previousRender;
+	}
+}
+/** @extends {VAbstractVisualObject<[number, number]>} */
+class VVideo extends VAbstractVisualObject {
 	timelineElementColor = "#F50"
 	/**
 	 * @param {Blob} videoBlob
 	 */
 	constructor(videoBlob) {
-		// - pos/size
-		var centerPos = new PositionProperty(0.5, 0.5)
-		var width = new NumericProperty(0.75)
 		// - video
 		var video = new BlobProperty(videoBlob)
 		var time = new AutoincrementingTimeProperty(0)
 		// create!
 		/** @type {[string, ObjectProperty][]} */
 		var properties = [
-			["Center Position", centerPos],
-			["Width", width],
 			["Video Time", time]
 		]
-		super(0, new Map(properties), 0)
+		super(properties, (expectedWidth, time) => { throw new Error("Cannot render unloaded video") }, 0)
 		// data
 		this.video = video
 		this.aspect_ratio = 1
@@ -2244,12 +2282,10 @@ class VVideo extends VObject {
 			this.afterPropertiesUpdated()
 		})()
 		// properties
-		this.centerPos = centerPos
-		this.width = width
 		this.time = time
 		// rendering cache
-		/** @type {AsyncCacheMap<[number, number], OffscreenCanvas>} */
-		this.renders = new AsyncCacheMap(this.requestRender.bind(this), 40)
+		this.renders.func = this.requestRender.bind(this)
+		this.previousRender = new OffscreenCanvas(1, 1)
 	}
 	/** @returns {Promise<{ type: "map", value: Map<string, CustomJSONObject> }>} */
 	async save() {
@@ -2315,16 +2351,25 @@ class VVideo extends VObject {
 	 */
 	async requestRender(expectedWidth, time) {
 		// Setup
+		await this.fullyLoaded;
+		// Choose a video element
 		var videoElement = await Promise.any([this.videoElement1Lock, this.videoElement2Lock])
 		/** @type {() => void} */ var finish = () => void(0)
 		if (videoElement == 1) this.videoElement1Lock = new Promise((resolve) => finish = () => resolve(1))
 		if (videoElement == 2) this.videoElement2Lock = new Promise((resolve) => finish = () => resolve(2))
-		await this.fullyLoaded;
 		// Create render
-		var canvas = await VVideo.createRender(expectedWidth, this.aspect_ratio, time, this.videoElement1)
+		var canvas = await VVideo.createRender(expectedWidth, this.aspect_ratio, time, videoElement == 1 ? this.videoElement1 : this.videoElement2)
 		// Cleanup
 		finish();
+		this.previousRender = canvas;
 		return canvas
+	}
+	/**
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
+	 */
+	getExpectedHeight(screenWidth, screenHeight) {
+		return this.width.value * screenWidth / this.aspect_ratio
 	}
 	/**
 	 * @param {number} screenWidth
@@ -2350,69 +2395,8 @@ class VVideo extends VObject {
 		if (canvas != undefined) return canvas
 		else {
 			this.requestRender(expectedWidth, currentTime)
-			return new OffscreenCanvas(expectedWidth, expectedHeight)
+			return this.previousRender;
 		}
-	}
-	/**
-	 * @param {number} screenWidth
-	 * @param {number} screenHeight
-	 * @returns {{ x: number, y: number, width: number, height: number }}
-	 */
-	getPixelBoundingBox(screenWidth, screenHeight) {
-		var width = this.width.value * screenWidth
-		var height = width / this.aspect_ratio
-		var posX = (this.centerPos.x * screenWidth) - (width / 2)
-		var posY = (this.centerPos.y * screenHeight) - (height / 2)
-		return {
-			x: posX,
-			y: posY,
-			width: width,
-			height: height
-		}
-	}
-	/**
-	 * @param {number} screenWidth
-	 * @param {number} screenHeight
-	 * @param {CanvasRenderingContext2D} canvas
-	 */
-	render(screenWidth, screenHeight, canvas) {
-		var render = this.getRender(screenWidth, screenHeight);
-		var posX = (this.centerPos.x * screenWidth) - (render.width / 2)
-		var posY = (this.centerPos.y * screenHeight) - (render.height / 2)
-		canvas.drawImage(render, Math.round(posX), Math.round(posY))
-	}
-	/**
-	 * @param {number} keyframe_number
-	 * @param {VideoEditorApp} app
-	 * @returns {Handle<[number, number]>[]}
-	 */
-	getViewportHandles(keyframe_number, app) {
-		return [
-			new ObjectRescaleHandle(app, this, { x: -1, y: -1 }, this.moveBy.bind(this), this.rescaleBy.bind(this), keyframe_number),
-			new ObjectRescaleHandle(app, this, { x: 1, y: -1 }, this.moveBy.bind(this), this.rescaleBy.bind(this), keyframe_number),
-			new ObjectRescaleHandle(app, this, { x: -1, y: 1 }, this.moveBy.bind(this), this.rescaleBy.bind(this), keyframe_number),
-			new ObjectRescaleHandle(app, this, { x: 1, y: 1 }, this.moveBy.bind(this), this.rescaleBy.bind(this), keyframe_number)
-		]
-	}
-	/**
-	 * @param {{ x: number, y: number }} delta
-	 * @param {number} keyframe_number
-	 */
-	moveBy(delta, keyframe_number) {
-		// Set Center Position
-		var configuredPosition = this.requireProperty("Center Position", PositionProperty, keyframe_number)
-		configuredPosition.x += delta.x;
-		configuredPosition.y += delta.y;
-	}
-	/**
-	 * @param {number} delta
-	 * @param {number} keyframe_number
-	 */
-	rescaleBy(delta, keyframe_number) {
-		if (delta <= 0 || this.width.value * delta < 0.001) return;
-		// Set Width
-		var configuredWidth = this.requireProperty("Width", NumericProperty, keyframe_number)
-		configuredWidth.value = Utils.roundToSignificantDigitsBinary(configuredWidth.value * delta, 8);
 	}
 }
 class VAudio extends VObject {

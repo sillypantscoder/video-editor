@@ -428,55 +428,65 @@ class CacheMap {
  * @template {any[]} T
  * @template V
  */
-class AsyncCacheMap {
+class AsyncPriorityCacheMap {
 	/** @param {(...params: T) => Promise<V>} func */
 	constructor(func, size = 10) {
 		/** @type {(...params: T) => Promise<V>} */
 		this.func = func
 		/** @type {number} */
 		this.size = size
-		/** @type {Map<string, { hasValue: false, callbacks: ((value: V) => void)[] } | { hasValue: true, value: V }>} */
+		/** @type {Map<string, { hasValue: false, callbacks: ((value: V) => void)[] } | { hasValue: true, time: number, value: V }>} */
 		this.items = new Map()
 	}
 	clear() {
 		this.items.clear()
 	}
 	/**
+	 * @param {number} time
 	 * @param {string} param
 	 * @param {V} result
 	 */
-	async addCachedValue(param, result) {
+	async addCachedValue(time, param, result) {
 		// update promises
 		var previousEntry = this.items.get(param)
 		if (previousEntry != undefined && !previousEntry.hasValue) previousEntry.callbacks.forEach((v) => v(result))
 		// Set item
-		this.items.set(param, { hasValue: true, value: result })
+		this.items.set(param, { hasValue: true, time: time, value: result })
 		if (this.items.size > this.size) {
 			this.items.delete(this.items.keys().next().value ?? "")
 		}
 	}
 	/**
+	 * @param {number} time
+	 * @returns {V | undefined}
+	 */
+	getFallbackValue(time) {
+		return [...this.items].flatMap((v) => v[1].hasValue ? [v[1]] : []).sort((a, b) => Math.abs(a.time - time) - Math.abs(b.time - time)).at(0)?.value;
+	}
+	/**
+	 * @param {number} time
 	 * @param {T} params
 	 * @returns {V | undefined}
 	 */
-	get(...params) {
+	get(time, ...params) {
 		var cacheKey = JSON.stringify(params.map((v) => v instanceof Blob ? Utils.hashBlobInstant(v) : v))
 		// Check for cached value
 		var cachedValue = this.items.get(cacheKey)
 		if (cachedValue != undefined) {
 			if (cachedValue.hasValue) return cachedValue.value;
-			else return undefined;
+			else return this.getFallbackValue(time);
 		}
 		// New cache entry
 		this.items.set(cacheKey, { hasValue: false, callbacks: [] })
-		this.func(...params).then((v) => this.addCachedValue(cacheKey, v))
-		return undefined;
+		this.func(...params).then((v) => this.addCachedValue(time, cacheKey, v))
+		return this.getFallbackValue(time);
 	}
 	/**
+	 * @param {number} time
 	 * @param {T} params
 	 * @returns {Promise<V>}
 	 */
-	async getAsync(...params) {
+	async getAsync(time, ...params) {
 		var cacheKey = JSON.stringify(params.map((v) => v instanceof Blob ? Utils.hashBlobInstant(v) : v))
 		// Check for cached value
 		var cachedValue = this.items.get(cacheKey)
@@ -491,7 +501,7 @@ class AsyncCacheMap {
 		// New cache entry
 		this.items.set(cacheKey, { hasValue: false, callbacks: [] })
 		let finalValue = await this.func(...params)
-		this.addCachedValue(cacheKey, finalValue)
+		this.addCachedValue(time, cacheKey, finalValue)
 		return finalValue;
 	}
 }
@@ -1651,6 +1661,7 @@ class VObject {
 	constructor(startTime, initialProperties, length) {
 		/** @type {Map<string, ObjectProperty>} */
 		this.properties = initialProperties
+		this.currentTime = startTime;
 		/** @type {{ renderLayer: number, startTime: number, initialProperties: Map<string, ObjectProperty>, keyframes: { time: number, properties: Map<string, ObjectProperty> }[] }} */
 		this.config = {
 			renderLayer: 0,
@@ -1837,6 +1848,7 @@ class VObject {
 		for (var key of properties.keys()) {
 			this.properties.get(key)?.setFrom(properties.get(key) ?? new ObjectProperty())
 		}
+		this.currentTime = time;
 	}
 	/**
 	 * @template {new (...args: any[]) => ObjectProperty} T
@@ -2053,10 +2065,10 @@ class VText extends VObject {
 class VAbstractVisualObject extends VObject {
 	/**
 	 * @param {[string, ObjectProperty][]} additionalProperties
-	 * @param {(...params: T) => Promise<OffscreenCanvas>} renderer
+	 * @param {(expectedWidth: number, expectedHeight: number) => T} getRenderingParams
 	 * @param {number} length
 	 */
-	constructor(additionalProperties, renderer, length) {
+	constructor(additionalProperties, getRenderingParams, length) {
 		// - pos/size
 		var centerPos = new PositionProperty(0.5, 0.5)
 		var width = new NumericProperty(0.5)
@@ -2072,8 +2084,9 @@ class VAbstractVisualObject extends VObject {
 		this.centerPos = centerPos
 		this.width = width
 		// rendering cache
-		/** @type {AsyncCacheMap<T, OffscreenCanvas>} */
-		this.renders = new AsyncCacheMap(renderer.bind(this), 40)
+		this.getRenderingParams = getRenderingParams;
+		/** @type {AsyncPriorityCacheMap<T, OffscreenCanvas>} */
+		this.renders = new AsyncPriorityCacheMap((...params) => this.createRender(...params), 40)
 	}
 	/**
 	 * @param {number} screenWidth
@@ -2084,12 +2097,35 @@ class VAbstractVisualObject extends VObject {
 		throw new Error("`VAbstractVisualObject` is an abstract class; `getExpectedHeight` must be overridden")
 	}
 	/**
-	 * @param {number} expectedWidth
-	 * @param {number} expectedHeight
-	 * @returns {OffscreenCanvas}
+	 * @param {T} params
+	 * @returns {Promise<OffscreenCanvas>}
 	 */
-	getRender(expectedWidth, expectedHeight) {
-		throw new Error("`VAbstractVisualObject` is an abstract class; `getRender` must be overridden")
+	async createRender(...params) {
+		throw new Error("`VAbstractVisualObject` is an abstract class; `createRender` must be overridden")
+	}
+	/**
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
+	 * @returns {Promise<OffscreenCanvas>}
+	 */
+	async getVisualRepresentation(screenWidth, screenHeight) {
+		var exactWidth = this.width.value * screenWidth
+		var exactHeight = this.getExpectedHeight(screenWidth, screenHeight)
+		var expectedWidth = Math.max(1, Math.round(exactWidth))
+		var expectedHeight = Math.max(1, Math.round(exactHeight))
+		return this.renders.getAsync(this.currentTime, ...this.getRenderingParams(expectedWidth, expectedHeight))
+	}
+	/**
+	 * @param {number} screenWidth
+	 * @param {number} screenHeight
+	 * @returns {OffscreenCanvas | undefined}
+	 */
+	getRender(screenWidth, screenHeight) {
+		var exactWidth = this.width.value * screenWidth
+		var exactHeight = this.getExpectedHeight(screenWidth, screenHeight)
+		var expectedWidth = Math.max(1, Math.round(exactWidth))
+		var expectedHeight = Math.max(1, Math.round(exactHeight))
+		return this.renders.get(this.currentTime, ...this.getRenderingParams(expectedWidth, expectedHeight))
 	}
 	/**
 	 * @param {number} screenWidth
@@ -2115,6 +2151,7 @@ class VAbstractVisualObject extends VObject {
 	 */
 	render(screenWidth, screenHeight, canvas) {
 		var render = this.getRender(screenWidth, screenHeight);
+		if (render == undefined) return;
 		var posX = (this.centerPos.x * screenWidth) - (render.width / 2)
 		var posY = (this.centerPos.y * screenHeight) - (render.height / 2)
 		canvas.drawImage(render, Math.round(posX), Math.round(posY))
@@ -2163,19 +2200,17 @@ class VImage extends VAbstractVisualObject {
 		// - blob
 		var image = new BlobProperty(imageBlob)
 		// create!
-		super([], VImage.createRender, 5)
+		super([], (expectedWidth, expectedHeight) => [expectedWidth, expectedHeight, this.image.value], 5)
 		// data
 		this.image = image
 		this.aspect_ratio = 1
 		this.fullyLoaded = createImageBitmap(imageBlob).then(async (bitmap) => {
 			this.aspect_ratio = bitmap.width / bitmap.height
 			// Wait until the object has finished rendering
-			while (this.renders.get(bitmap.width, bitmap.height, this.image.value) == undefined) {
+			while (this.renders.get(-Infinity, bitmap.width, bitmap.height, this.image.value) == undefined) {
 				await new Promise((resolve) => requestAnimationFrame(resolve));
 			}
 		})
-		// rendering cache
-		this.previousRender = new OffscreenCanvas(1, 1)
 	}
 	/** @returns {Promise<{ type: "map", value: Map<string, CustomJSONObject> }>} */
 	async save() {
@@ -2195,7 +2230,7 @@ class VImage extends VAbstractVisualObject {
 	 * @param {Blob} blob
 	 * @returns {Promise<OffscreenCanvas>}
 	 */
-	static async createRender(width, height, blob) {
+	async createRender(width, height, blob) {
 		var bitmap = await createImageBitmap(blob)
 		// create canvas
 		var canvas = new OffscreenCanvas(width, height)
@@ -2215,33 +2250,6 @@ class VImage extends VAbstractVisualObject {
 	getExpectedHeight(screenWidth, screenHeight) {
 		return this.width.value * screenWidth / this.aspect_ratio
 	}
-	/**
-	 * @param {number} screenWidth
-	 * @param {number} screenHeight
-	 * @returns {Promise<OffscreenCanvas>}
-	 */
-	async getVisualRepresentation(screenWidth, screenHeight) {
-		var exactWidth = this.width.value * screenWidth
-		var exactHeight = this.getExpectedHeight(screenWidth, screenHeight)
-		var expectedWidth = Math.max(1, Math.round(exactWidth))
-		var expectedHeight = Math.max(1, Math.round(exactHeight))
-		var canvas = await this.renders.getAsync(expectedWidth, expectedHeight, this.image.value)
-		return canvas
-	}
-	/**
-	 * @param {number} screenWidth
-	 * @param {number} screenHeight
-	 * @returns {OffscreenCanvas}
-	 */
-	getRender(screenWidth, screenHeight) {
-		var exactWidth = this.width.value * screenWidth
-		var exactHeight = this.getExpectedHeight(screenWidth, screenHeight)
-		var expectedWidth = Math.max(1, Math.round(exactWidth))
-		var expectedHeight = Math.max(1, Math.round(exactHeight))
-		var canvas = this.renders.get(expectedWidth, expectedHeight, this.image.value)
-		if (canvas != undefined) return canvas
-		else return this.previousRender;
-	}
 }
 /** @extends {VAbstractVisualObject<[number, number]>} */
 class VVideo extends VAbstractVisualObject {
@@ -2258,7 +2266,7 @@ class VVideo extends VAbstractVisualObject {
 		var properties = [
 			["Video Time", time]
 		]
-		super(properties, (expectedWidth, time) => { throw new Error("Cannot render unloaded video") }, 0)
+		super(properties, (expectedWidth, expectedHeight) => [expectedWidth, this.time.value], 0)
 		// data
 		this.video = video
 		this.aspect_ratio = 1
@@ -2283,9 +2291,6 @@ class VVideo extends VAbstractVisualObject {
 		})()
 		// properties
 		this.time = time
-		// rendering cache
-		this.renders.func = this.requestRender.bind(this)
-		this.previousRender = new OffscreenCanvas(1, 1)
 	}
 	/** @returns {Promise<{ type: "map", value: Map<string, CustomJSONObject> }>} */
 	async save() {
@@ -2327,8 +2332,8 @@ class VVideo extends VAbstractVisualObject {
 	 * @param {HTMLVideoElement} videoElement
 	 * @returns {Promise<OffscreenCanvas>}
 	 */
-	static async createRender(width, aspect_ratio, time, videoElement) {
-		// Load image asynchronously and update the cached render when ready
+	static async actualCreateRender(width, aspect_ratio, time, videoElement) {
+		// Wait for video to load
 		videoElement.currentTime = time
 		while (videoElement.readyState < 2) {
 			await new Promise((resolve) => requestAnimationFrame(resolve));
@@ -2349,7 +2354,7 @@ class VVideo extends VAbstractVisualObject {
 	 * @param {number} expectedWidth
 	 * @param {number} time
 	 */
-	async requestRender(expectedWidth, time) {
+	async createRender(expectedWidth, time) {
 		// Setup
 		await this.fullyLoaded;
 		// Choose a video element
@@ -2358,7 +2363,7 @@ class VVideo extends VAbstractVisualObject {
 		if (videoElement == 1) this.videoElement1Lock = new Promise((resolve) => finish = () => resolve(1))
 		if (videoElement == 2) this.videoElement2Lock = new Promise((resolve) => finish = () => resolve(2))
 		// Create render
-		var canvas = await VVideo.createRender(expectedWidth, this.aspect_ratio, time, videoElement == 1 ? this.videoElement1 : this.videoElement2)
+		var canvas = await VVideo.actualCreateRender(expectedWidth, this.aspect_ratio, time, videoElement == 1 ? this.videoElement1 : this.videoElement2)
 		// Cleanup
 		finish();
 		this.previousRender = canvas;
@@ -2370,33 +2375,6 @@ class VVideo extends VAbstractVisualObject {
 	 */
 	getExpectedHeight(screenWidth, screenHeight) {
 		return this.width.value * screenWidth / this.aspect_ratio
-	}
-	/**
-	 * @param {number} screenWidth
-	 * @param {number} screenHeight
-	 * @returns {Promise<OffscreenCanvas>}
-	 */
-	async getVisualRepresentation(screenWidth, screenHeight) {
-		var expectedWidth = Math.round(this.width.value * screenWidth)
-		var canvas = await this.requestRender(expectedWidth, this.time.value)
-		return canvas
-	}
-	/**
-	 * @param {number} screenWidth
-	 * @param {number} screenHeight
-	 * @returns {OffscreenCanvas}
-	 */
-	getRender(screenWidth, screenHeight) {
-		var expectedWidth = Math.round(this.width.value * screenWidth)
-		var expectedHeight = Math.round(this.width.value * screenWidth / this.aspect_ratio)
-		var currentTime = this.time.value
-		// Find an existing canvas
-		var canvas = this.renders.get(expectedWidth, currentTime)
-		if (canvas != undefined) return canvas
-		else {
-			this.requestRender(expectedWidth, currentTime)
-			return this.previousRender;
-		}
 	}
 }
 class VAudio extends VObject {
@@ -2434,9 +2412,6 @@ class VAudio extends VObject {
 		// properties
 		this.volume = volume
 		this.time = time
-		// rendering cache
-		/** @type {AsyncCacheMap<[number, number, number, AudioBuffer], OffscreenCanvas>} */
-		this.renders = new AsyncCacheMap(VAudio.createRender, 5)
 	}
 	/** @returns {Promise<{ type: "map", value: Map<string, CustomJSONObject> }>} */
 	async save() {
@@ -2513,7 +2488,7 @@ class VAudio extends VObject {
 	async getVisualRepresentation(screenWidth, screenHeight) {
 		if (this.audioBuffer != null) {
 			var expectedWidth = screenWidth * 0.125
-			var canvas = await this.renders.getAsync(expectedWidth, this.volume.value, this.time.value, this.audioBuffer)
+			var canvas = await VAudio.createRender(expectedWidth, this.volume.value, this.time.value, this.audioBuffer)
 			return canvas;
 		} else throw new Error("Cannot getVisualRepresentation before audio is fully loaded")
 	}
@@ -2576,14 +2551,14 @@ class VideoEditorApp {
 		this.mainOptionsTab = new OptionsWindowTab("Scene", [
 			Options.number("Current time:", () => this.currentTime, (v) => this.setCurrentTime(v)),
 			Options.buttons([
-				{ text: "Export Project", onclick: () => this.export() },
+				{ text: "Export Project", onclick: () => this.export().then((blob) => Utils.downloadBlob(blob, "project.zip")) },
 				{ text: "Import Project", onclick: () => this.requestImport() }
 			]),
 			Options.h("Create an object..."),
 			Options.buttons([
 				{ text: "Text", onclick: () => this.addFreshObject(new VText(), new Map([
 					["Text", new StringProperty(prompt("Enter the text to display:", "Text") ?? (() => {
-						throw new Error("Cancelled by user")
+						throw new Error("Cancelled by user");
 					})())]
 				]), true) }
 			])
@@ -2632,12 +2607,11 @@ class VideoEditorApp {
 		var zip = new JSZip();
 		zip.file("project.dat", mainData);
 		var blobFolder = zip.folder("blobs")
-		for (var blob of allSaveData.blobs) {
+		for (let blob of allSaveData.blobs) {
 			blobFolder.file(blob[0], blob[1]);
 		}
-		zip.generateAsync({ type: "blob" }).then((blob) => {
-			Utils.downloadBlob(blob, "project.zip")
-		})
+		var blob = await zip.generateAsync({ type: "blob" })
+		return blob
 	}
 	requestImport() {
 		var e = document.createElement("input")

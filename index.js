@@ -327,6 +327,58 @@ class FFmpegAccessor {
 		}
 	})();
 	/**
+	 * @param {(time: number) => void} callback
+	 * @returns {() => void} Function that removes the callback
+	 */
+	static addProgressCallback(callback) {
+		var func = (/** @type {{ message: string }} */ e) => {
+			if (e.message.startsWith("frame=")) {
+				var timeData = e.message.split(" ").filter((v) => v.startsWith("time="))
+				if (timeData.length > 0) {
+					var time = timeData[0].split("=")[1].split(":").map(Number).reduce((a, b) => (60*a)+b)
+					callback(time)
+				}
+			}
+		}
+		this.FFMPEG.on("log", func);
+		return () => this.FFMPEG.off("log", func);
+	}
+	/**
+	 * @param {Blob} blob
+	 * @param {"a" | "v"} streamType
+	 * @param {number} audioStreamIndex
+	 * @param {(progress: number) => void} progressCallback
+	 */
+	static async reEncodeStream(blob, streamType, audioStreamIndex, progressCallback) {
+		await this.LOCK.acquire();
+		// Get duration
+		this.FFMPEG.writeFile("/re_encode", new Uint8Array(await blob.arrayBuffer()))
+		await this.FFMPEG.ffprobe(["-show_entries", "format=duration", "-of", "json", "/re_encode", "-o", "/probe.txt"])
+		var mediaDuration = Number(JSON.parse(new TextDecoder().decode(await this.FFMPEG.readFile("/probe.txt"))).format.duration)
+		await this.FFMPEG.deleteFile("/probe.txt")
+		// progress
+		var endProgress = this.addProgressCallback((time) => progressCallback(time / mediaDuration))
+		// exec
+		var output_filename = "/out." + { "a": "mp3", "v": "mp4" }[streamType]
+		var args = [
+			"-i", "/re_encode",
+			"-map",
+			`0:${streamType}:${audioStreamIndex}`,
+			output_filename
+		]
+		await this.FFMPEG.exec(args)
+		// remove progress callback
+		endProgress()
+		progressCallback(1)
+		// Finish / clean up
+		await this.FFMPEG.deleteFile("/re_encode");
+		/** @type {Blob} */
+		var outputBlob = new Blob([await this.FFMPEG.readFile(output_filename)]);
+		await this.FFMPEG.deleteFile(output_filename)
+		this.LOCK.unlock();
+		return outputBlob;
+	}
+	/**
 	 * @param {Blob} blob
 	 */
 	static async splitVideoOrAudioIntoStreams(blob) {
@@ -335,6 +387,7 @@ class FFmpegAccessor {
 		this.FFMPEG.writeFile("/split", new Uint8Array(await blob.arrayBuffer()))
 		await this.FFMPEG.ffprobe(["-show_entries", "stream=index,codec_type,channels,channel_layout,channel_layout:stream_disposition", "-of", "json", "/split", "-o", "/probe.txt"])
 		var probeOutput = JSON.parse(new TextDecoder().decode(await this.FFMPEG.readFile("/probe.txt"))).streams
+		await this.FFMPEG.deleteFile("/probe.txt")
 		// Parse stream list
 		/** @type {({ index: number, streamIndex: number, type: "video" } | { index: number, streamIndex: number, type: "audio", channels: number, layout_name: string })[]} */
 		var streams = []
@@ -352,7 +405,7 @@ class FFmpegAccessor {
 				let layout_name = probeOutput[i].channel_layout;
 				streams.push({ index, streamIndex, type, channels, layout_name })
 			} else {
-				console.error("Unknown stream type:", type)
+				console.warn("Unknown stream type:", type)
 			}
 		}
 		// Extract each into own file
@@ -369,13 +422,14 @@ class FFmpegAccessor {
 		await this.FFMPEG.exec(args)
 		// Finish / clean up
 		await this.FFMPEG.deleteFile("/split");
-		/** @type {{ type: "video" | "audio", data: Blob }[]} */
+		/** @type {{ type: "video" | "audio", data: Blob, streamIndex: number }[]} */
 		var outputData = [];
 		for (let s of streams) {
 			let filename = `/out${s.index}.${{ "video": "mp4", "audio": "wav", "subtitle": "srt" }[s.type]}`
 			outputData.push({
 				type: s.type,
-				data: new Blob([await this.FFMPEG.readFile(filename)])
+				data: new Blob([await this.FFMPEG.readFile(filename)]),
+				streamIndex: s.streamIndex
 			})
 			await this.FFMPEG.deleteFile(filename)
 		}
@@ -1799,8 +1853,8 @@ class VObject {
 		var object;
 		if (objectType == "text") object = new VText()
 		else if (objectType == "image") object = new VImage(getBlob(dataMap.get("imageBlob")))
-		else if (objectType == "video") object = new VVideo(getBlob(dataMap.get("videoBlob")))
-		else if (objectType == "audio") object = new VAudio(getBlob(dataMap.get("audioBlob")))
+		else if (objectType == "video") object = new VVideo(getBlob(dataMap.get("videoBlob")), null)
+		else if (objectType == "audio") object = new VAudio(getBlob(dataMap.get("audioBlob")), null)
 		else throw new Error("Unknown object type: " + objectType)
 		// set object layer
 		{
@@ -2317,8 +2371,9 @@ class VVideo extends VAbstractVisualObject {
 	timelineElementColor = "#F50"
 	/**
 	 * @param {Blob} videoBlob
+	 * @param {(() => Promise<Blob>) | null} reEncode
 	 */
-	constructor(videoBlob) {
+	constructor(videoBlob, reEncode) {
 		// - video
 		var video = new BlobProperty(videoBlob)
 		var time = new AutoincrementingTimeProperty(0)
@@ -2342,8 +2397,22 @@ class VVideo extends VAbstractVisualObject {
 		/** @type {Promise<2>} */ this.videoElement2Lock = Promise.resolve(2);
 		this.fullyLoaded = (async () => {
 			await new Promise((resolve) => requestAnimationFrame(resolve));
+			var tries = 0;
 			while (this.videoElement1.readyState < 2 || this.videoElement2.readyState < 2) {
 				await new Promise((resolve) => requestAnimationFrame(resolve));
+				tries += 1;
+				if (tries == 180 && reEncode != null) {
+					this.video.value = await reEncode()
+					// reload video elements
+					this.videoElement1.src = URL.createObjectURL(this.video.value);
+					this.videoElement1.load();
+					this.videoElement2.src = URL.createObjectURL(this.video.value);
+					this.videoElement2.load();
+				}
+				if (tries == 360) {
+					alert("Video loading failed.")
+					throw new Error();
+				}
 			}
 			this.aspect_ratio = this.videoElement1.videoWidth / this.videoElement1.videoHeight
 			this.duration = this.videoElement1.duration
@@ -2438,13 +2507,35 @@ class VVideo extends VAbstractVisualObject {
 	getExpectedHeight(screenWidth, screenHeight) {
 		return this.width.value * screenWidth / this.aspect_ratio
 	}
+	/**
+	 * @param {Blob} fullBlob
+	 * @param {number} audioStreamIndex
+	 */
+	static async reEncodeVideo(fullBlob, audioStreamIndex) {
+		console.warn("We need to re-encode the video!")
+		var tab = new OptionsWindowTab("Re-encoding...", [
+			Options.h("Re-encoding the video..."),
+			Options.p("This only happens if the video data is in a weird format and can't be loaded. To make it faster, try re-encoding the video yourself before uploading it (with the command `ffmpeg -i <filename> -map 0:v:0 re_encoded.mp4`)."),
+			Options.p("")
+		])
+		tab.show(); tab.focus();
+		var newBlob = await FFmpegAccessor.reEncodeStream(fullBlob, "v", audioStreamIndex, (progress) => {
+			var percentDone = (progress * 100).toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 2 })
+			tab.section.children[2].innerHTML = `${percentDone}% done...`
+		})
+		// Hide uploading tab
+		tab.hide();
+		// Load new audio blob
+		return newBlob;
+	}
 }
 class VAudio extends VObject {
 	timelineElementColor = "#E0E"
 	/**
 	 * @param {Blob} audioBlob
+	 * @param {(() => Promise<Blob>) | null} reEncode
 	 */
-	constructor(audioBlob) {
+	constructor(audioBlob, reEncode) {
 		// - audio
 		var volume = new NumericProperty(1)
 		var audio = new BlobProperty(audioBlob)
@@ -2463,13 +2554,28 @@ class VAudio extends VObject {
 		this.audioBuffer = null;
 		this.fullyLoaded = (async () => {
 			// Construct AudioBuffer
-			var arrayBuffer = await audioBlob.arrayBuffer();
-			var audioContext = new OfflineAudioContext(1, 1, 44100);
-			this.audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+			try {
+				var arrayBuffer = await audioBlob.arrayBuffer();
+				var audioContext = new OfflineAudioContext(1, 1, 44100);
+				this.audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+			} catch {
+				try {
+					if (reEncode == null) throw new Error("Can't re-encode in this context")
+					this.audio.value = await reEncode()
+					// Try again after re-encoding
+					var arrayBuffer = await this.audio.value.arrayBuffer();
+					var audioContext = new OfflineAudioContext(1, 1, 44100);
+					this.audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+				} catch (e) {
+					alert("Error loading audio data! Try re-encoding it yourself.")
+					throw e;
+				}
+			}
 			// Set duration
 			this.duration = this.audioBuffer.duration
 			if (this.config.keyframes[0].time == this.config.startTime) this.config.keyframes[0].time += this.duration
 			this.afterPropertiesUpdated()
+			console.error("audio done!")
 		})()
 		// properties
 		this.volume = volume
@@ -2584,6 +2690,27 @@ class VAudio extends VObject {
 	getViewportHandles(keyframe_number, app) {
 		return []
 	}
+	/**
+	 * @param {Blob} fullBlob
+	 * @param {number} audioStreamIndex
+	 */
+	static async reEncodeAudio(fullBlob, audioStreamIndex) {
+		console.warn("We need to re-encode the audio!")
+		var tab = new OptionsWindowTab("Re-encoding...", [
+			Options.h("Re-encoding the audio..."),
+			Options.p("This only happens if the audio data is in a weird format and can't be loaded. To make it faster, try re-encoding the audio yourself before uploading it (with the command `ffmpeg -i <filename> -map 0:a:0 re_encoded.mp3`)."),
+			Options.p("")
+		])
+		tab.show(); tab.focus();
+		var newBlob = await FFmpegAccessor.reEncodeStream(fullBlob, "a", audioStreamIndex, (progress) => {
+			var percentDone = (progress * 100).toLocaleString('en-US', { useGrouping: false, maximumFractionDigits: 2 })
+			tab.section.children[2].innerHTML = `${percentDone}% done...`
+		})
+		// Hide uploading tab
+		tab.hide();
+		// Load new audio blob
+		return newBlob;
+	}
 }
 class VGroup extends VObject {
 	timelineElementColor = "#DDD"
@@ -2614,7 +2741,10 @@ class VGroup extends VObject {
 		// data
 		this.contents = contents
 		this.containedTime = containedTime
-		this.fullyLoaded = new Promise((resolve) => Promise.all(this.contents.objects.map((v) => v.fullyLoaded)).then(resolve))
+		this.fullyLoaded = (async () => {
+			await Promise.all(this.contents.objects.map((v) => v.fullyLoaded));
+			this.afterPropertiesUpdated();
+		})();
 	}
 	/** @returns {Promise<{ type: "map", value: Map<string, CustomJSONObject> }>} */
 	async save() {
@@ -3031,6 +3161,8 @@ class VideoEditorApp {
 			this.updateAllTimelineElements(false);
 			if (select) {
 				this.setSelectedObject(object)
+			} else {
+				this.mainOptionsTab.focus()
 			}
 			// add previews to timeline element
 			var timelineElement = this.timelineElements.get(object);
@@ -3111,13 +3243,20 @@ class VideoEditorApp {
 			this.addFreshObject(new VImage(blob), new Map(), true, true)
 		} else if (mode == "media") {
 			FFmpegAccessor.splitVideoOrAudioIntoStreams(blob).then((streams) => {
-				for (var s of streams) {
-					if (s.type == "video") {
-						this.addFreshObject(new VVideo(s.data), new Map(), true, false);
-					} else if (s.type == "audio") {
-						this.addFreshObject(new VAudio(s.data), new Map(), true, false);
+				/** @type {VObject[]} */
+				var objects = [];
+				for (var i = 0; i < streams.length; i++) {
+					if (streams[i].type == "video") {
+						objects.push(new VVideo(streams[i].data, VVideo.reEncodeVideo.bind(null, blob, streams[i].streamIndex)));
+					} else if (streams[i].type == "audio") {
+						objects.push(new VAudio(streams[i].data, VAudio.reEncodeAudio.bind(null, blob, streams[i].streamIndex)));
 					}
 				}
+				// Add
+				if (objects.length == 0) return alert("No objects were added")
+				else if (objects.length == 1) var newObj = objects[0];
+				else var /** @type {VObject} */ newObj = new VGroup(objects);
+				this.addFreshObject(newObj, new Map(), true, true)
 			});
 		}
 	}
